@@ -2,26 +2,25 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "required": [
-    "run_id",
     "agent_id",
-    "connector",
-    "issue_id",
-    "state"
+    "task_id",
+    "mode",
+    "issue_id"
   ],
   "properties": {
-    "run_id": {
-      "type": "string"
-    },
     "agent_id": {
       "type": "string"
     },
-    "connector": {
+    "task_id": {
       "type": "string"
+    },
+    "mode": {
+      "enum": [
+        "read_only",
+        "writer"
+      ]
     },
     "issue_id": {
-      "type": "string"
-    },
-    "state": {
       "type": "string"
     }
   }

@@ -1,0 +1,15 @@
+version: 1
+responsibilities:
+  - validate schedule plan schema
+  - resolve agent_id through private bindings
+  - create worktree and branch for writer runs
+  - enforce writer/read-only mode constraints
+  - record trace and dispatch log
+  - run validation gates
+  - prepare pull request evidence
+forbidden_to_scheduler:
+  - connector choice
+  - model choice
+  - credentials
+  - shell command execution
+  - merge execution

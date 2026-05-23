@@ -1,15 +1,20 @@
-version: 1
+version: 2
 canonical_instruction: AGENTS.md
+schedule_target: agent_identity
+dispatcher_private_bindings: .ai/private/assignments.yml
 run_id_prefix: run
 paths:
   worktrees: .worktrees
   runs: .ai/runs
-  roles: .ai/roles
-  runtimes: .ai/runtimes
+  agents: .ai/agents
+  agent_catalog: .ai/agent-catalog.yml
+  connectors: .ai/connectors
 policies:
   writer_run_pr_policy: required
   one_pr_owner: true
+  scheduler_runtime_blind: true
+  scheduler_executes_cli: false
   reviewer_writes_implementation_branch: false
   claude_md_committed: false
-branch_template: ai/{issue_id}/{role_id}/{run_id}
-worktree_template: .worktrees/{run_id}-{role_id}
+branch_template: ai/{issue_id}/{agent_id}/{run_id}
+worktree_template: .worktrees/{run_id}-{agent_id}

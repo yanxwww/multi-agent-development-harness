@@ -1,0 +1,35 @@
+version: 1
+bindings:
+  scheduler-agent:
+    connector: claude-code-cli
+    profile: scheduler-readonly
+  issue-compiler:
+    connector: codex-cli
+    profile: readonly-json
+  architect:
+    connector: claude-code-cli
+    profile: planner
+  backend-implementer:
+    connector: codex-cli
+    profile: writer-workspace
+  frontend-implementer:
+    connector: claude-code-cli
+    profile: writer-workspace
+  qa-agent:
+    connector: codex-cli
+    profile: qa-workspace
+  security-reviewer:
+    connector: claude-code-cli
+    profile: reviewer-readonly
+  pr-reviewer:
+    connector: claude-code-cli
+    profile: reviewer-readonly
+  ci-repair-agent:
+    connector: codex-cli
+    profile: writer-workspace
+  skill-curator:
+    connector: claude-code-cli
+    profile: skill-writer
+  release-agent:
+    connector: claude-code-cli
+    profile: release-readonly

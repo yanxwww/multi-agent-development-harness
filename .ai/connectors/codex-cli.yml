@@ -1,0 +1,19 @@
+id: codex-cli
+version: 1
+executable: codex
+profiles:
+  scheduler-readonly:
+    sandbox: read-only
+    tools: read-only
+  readonly-json:
+    sandbox: read-only
+    tools: read-only
+  writer-workspace:
+    sandbox: workspace-write
+    tools: shell-and-edit
+  qa-workspace:
+    sandbox: workspace-write
+    tools: shell-and-edit
+command_templates:
+  scheduler-readonly: codex exec --cd {workspace} --sandbox read-only --json --output-schema {output_schema}
+  writer-workspace: codex exec --cd {workspace} --sandbox workspace-write --json --output-schema {output_schema}

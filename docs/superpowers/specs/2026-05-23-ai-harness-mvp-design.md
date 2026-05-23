@@ -2,29 +2,30 @@
 
 ## Goal
 
-Build a user-configurable AI automation development harness where roles are neutral Role Profiles, Codex and Claude Code are Runtime Adapters, and every writer run is isolated by worktree, branch, trace, evidence, and pull request ownership.
+Build a user-configurable AI automation development harness where the scheduler targets neutral agent identities, Codex CLI and Claude Code CLI are private connector bindings, and every writer run is isolated by worktree, branch, trace, evidence, and pull request ownership.
 
 ## Core Principles
 
 The repository has one canonical project instruction entry point: `AGENTS.md`.
 Runtime-specific files may bridge into that instruction at run time, but they must not become separate sources of truth. `CLAUDE.md` is treated as an ephemeral adapter artifact and is ignored by git.
 
-The harness does not decide that Codex is an implementer or Claude Code is a reviewer. The user decides runtime assignment in `.ai/assignments.yml`. The harness only resolves role, runtime, permissions, skills, workspace isolation, state, trace, and PR evidence.
+The scheduler does not decide that Codex is an implementer or Claude Code is a reviewer. The scheduler only sees `.ai/agent-catalog.yml` and emits `SchedulePlan` JSON targeting `agent_id`. The deterministic dispatcher privately resolves `agent_id -> connector profile` from `.ai/private/assignments.yml`.
 
 Every writing run has a single owner and must use an isolated workspace. Read-only runs may share clean checkouts or PR diffs, but the moment a run writes repository files it must become a writer run with its own worktree, branch, trace, and PR.
 
 ## MVP Scope
 
-The first version is a local CLI scaffold. It does not invoke Codex or Claude Code directly. It creates the repo contract that future runtime adapters will use.
+The first version is a local CLI scaffold. It does not invoke Codex or Claude Code directly. It creates the repo contract that future CLI connectors will use.
 
 The CLI provides:
 
 - `harness init` to create the canonical scaffold.
 - `harness validate` to check scaffold consistency.
-- `harness create-run` to allocate a run id, branch name, worktree path, assignment, trace skeleton, and evidence bundle.
+- `harness create-run` to allocate a run id, branch name, worktree path, private connector binding, trace skeleton, and evidence bundle for one agent identity.
+- `harness dispatch-plan` to validate a runtime-blind SchedulePlan and prepare deterministic AgentRun records through private connector bindings.
 - `harness pr-body` to render a PR body from run evidence.
 
-The MVP includes runtime adapter metadata for Codex and Claude Code, but execution is intentionally deferred. This keeps the architecture neutral and testable before integrating actual agent processes.
+The MVP includes connector contract metadata for Codex CLI and Claude Code CLI, but execution is intentionally deferred. This keeps the architecture neutral and testable before integrating actual agent processes.
 
 ## Repository Contract
 
@@ -34,9 +35,11 @@ The generated target repository layout is:
 AGENTS.md
 .ai/
   harness.yml
-  assignments.yml
-  roles/
-  runtimes/
+  agent-catalog.yml
+  private/
+    assignments.yml
+  agents/
+  connectors/
   skills/
   rules/
   schemas/
@@ -55,13 +58,13 @@ docs/
   exec-plans/
 ```
 
-`AGENTS.md` contains the hard operating rules and navigation map. `.ai/roles/*.yml` contains Role Profiles. `.ai/assignments.yml` maps roles to runtimes and allowed skills. `.ai/runtimes/*.yml` describes adapter behavior. `.ai/rules/*.yml` contains policy such as state transitions, review rubrics, PR gates, CI/eval gates, permission boundaries, and skill evolution. `.ai/schemas/*.schema.json` defines structured artifacts.
+`AGENTS.md` contains the hard operating rules and navigation map. `.ai/agent-catalog.yml` is the scheduler-visible catalog. `.ai/agents/*.md` contains agent identity docs. `.ai/private/assignments.yml` maps agent ids to connector profiles and is only for the dispatcher. `.ai/connectors/*.yml` describes CLI connector contracts. `.ai/rules/*.yml` contains policy such as state transitions, review rubrics, PR gates, CI/eval gates, permission boundaries, and skill evolution. `.ai/schemas/*.schema.json` defines structured artifacts.
 
-`.agents/skills` and `.claude/skills` are runtime-specific installation targets. `.ai/skills` is the neutral registry. Runtime adapters may sync selected skills into runtime-specific directories per assignment policy.
+`.agents/skills` and `.claude/skills` are connector-specific installation targets. `.ai/skills` is the neutral registry. Connectors may sync selected skills into connector-specific directories per assignment policy.
 
-## Role Profiles
+## Agent Identities
 
-Each role profile is a neutral identity document. It defines:
+Each agent identity document is a neutral identity document. It defines:
 
 - `id`
 - `type`: `read-only`, `writer`, or `hybrid`
@@ -74,40 +77,46 @@ Each role profile is a neutral identity document. It defines:
 - escalation rules
 - default PR policy
 
-Writer role profiles require an isolated worktree, branch, trace, evidence bundle, and PR. Read-only role profiles must not modify repository files.
+Writer agent identities require an isolated worktree, branch, trace, evidence bundle, and PR. Read-only agent identities must not modify repository files.
 
-## Runtime Assignment
+## Scheduler / Dispatcher Boundary
 
-`.ai/assignments.yml` maps role ids to runtime ids:
+The scheduler sees only agent identities and produces a `SchedulePlan`:
 
-```yaml
-assignments:
-  backend-implementer:
-    runtime: codex
-    allowed_skills:
-      - backend-implementation
-      - pr-evidence-bundle
-  pr-reviewer:
-    runtime: claude-code
-    allowed_skills:
-      - pr-reviewer
+```json
+{
+  "run_plan": [
+    {
+      "agent_id": "backend-implementer",
+      "task_id": "T3",
+      "mode": "writer",
+      "depends_on": ["T1", "T2"],
+      "expected_output": "branch_pr",
+      "requires_pr": true,
+      "risk_level": "medium",
+      "success_criteria": ["Backend tests pass"]
+    }
+  ],
+  "blocked": [],
+  "risk_notes": []
+}
 ```
 
-The same role can be reassigned to another runtime without editing the role profile.
+The dispatcher sees `.ai/private/assignments.yml` and resolves `backend-implementer -> codex-cli / writer-workspace`. Connector, model, credentials, and CLI flags are not part of scheduler output.
 
 ## Run Model
 
 An Agent Run is:
 
 ```text
-Role + Runtime + Task + Worktree + Branch + Permissions + Skills + Trace
+Agent Identity + Connector Binding + Task + Worktree + Branch + Permissions + Skills + Trace
 ```
 
 Writer runs use:
 
 ```text
-branch: ai/<issue-id>/<role-id>/<run-id>
-worktree: .worktrees/<run-id>-<role-id>
+branch: ai/<issue-id>/<agent-id>/<run-id>
+worktree: .worktrees/<run-id>-<agent-id>
 trace: .ai/runs/<run-id>/
 ```
 
@@ -119,11 +128,12 @@ Every writer run should correspond to one PR. A PR has one current writer owner.
 
 Every AI PR body includes:
 
-- agent role id
-- runtime id
+- agent identity id
+- connector id
+- connector profile
 - run id
-- role profile path
-- role profile hash
+- agent doc path
+- agent doc hash
 - skills used
 - linked issue
 - scope
@@ -151,10 +161,11 @@ Future orchestrators can enforce the same state transitions.
 `harness validate` checks:
 
 - required files exist
-- role ids match filenames
-- assignments reference existing roles and runtimes
-- assigned skills are allowed by the role profile
-- runtime definitions exist
+- agent ids match `.ai/agents/*.md` front matter
+- agent catalog references existing agent docs
+- scheduler-visible catalog does not expose connector/runtime/model keys
+- private bindings reference existing agents, connectors, and profiles
+- connector definitions exist
 - schemas are valid JSON
 - `CLAUDE.md` is ignored instead of committed as canonical memory
 
@@ -170,4 +181,3 @@ The MVP does not:
 - enforce branch locks
 
 These are adapter and orchestration layers that can be added after the repo contract is stable.
-

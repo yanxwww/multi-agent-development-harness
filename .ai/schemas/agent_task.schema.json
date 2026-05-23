@@ -16,6 +16,9 @@
     },
     "issue": {
       "type": "string"
+    },
+    "task_id": {
+      "type": "string"
     }
   }
 }

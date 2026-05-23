@@ -1,0 +1,25 @@
+id: claude-code-cli
+version: 1
+executable: claude
+profiles:
+  scheduler-readonly:
+    mode: bare-print
+    tools: Read,Grep,Glob
+  planner:
+    mode: bare-print
+    tools: Read,Grep,Glob
+  writer-workspace:
+    mode: bare-print
+    tools: Read,Edit,Bash,Grep,Glob
+  reviewer-readonly:
+    mode: bare-print
+    tools: Read,Grep,Glob
+  skill-writer:
+    mode: bare-print
+    tools: Read,Edit,Bash,Grep,Glob
+  release-readonly:
+    mode: bare-print
+    tools: Read,Grep,Glob
+command_templates:
+  scheduler-readonly: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
+  writer-workspace: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}

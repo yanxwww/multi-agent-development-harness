@@ -1,13 +1,15 @@
 version: 1
 skills:
+  schedule-planning:
+    description: Produce runtime-blind SchedulePlan JSON.
   issue-compiler:
     description: Compile user requests into issue specs.
   architecture-planning:
     description: Produce task graphs and architecture findings.
   backend-implementation:
-    description: Implement backend changes under role boundaries.
+    description: Implement backend changes under agent boundaries.
   frontend-implementation:
-    description: Implement frontend changes under role boundaries.
+    description: Implement frontend changes under agent boundaries.
   test-design:
     description: Reproduce behavior and add tests when assigned as writer.
   security-review:

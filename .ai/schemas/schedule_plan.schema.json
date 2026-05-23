@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "run_plan",
+    "blocked",
+    "risk_notes"
+  ],
+  "properties": {
+    "run_plan": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "task_id",
+          "mode",
+          "depends_on",
+          "expected_output",
+          "requires_pr",
+          "risk_level"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "read_only",
+              "writer"
+            ]
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "expected_output": {
+            "type": "string",
+            "enum": [
+              "issue_spec",
+              "task_graph",
+              "branch_pr",
+              "review_findings",
+              "test_report",
+              "skill_update_pr",
+              "schedule_plan"
+            ]
+          },
+          "requires_pr": {
+            "type": "boolean"
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "success_criteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "blocked": {
+      "type": "array"
+    },
+    "risk_notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

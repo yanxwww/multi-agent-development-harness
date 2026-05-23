@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from .yaml_lite import load_yaml
+from .yaml_lite import load_yaml, loads_yaml
 
 
 class ValidationError(Exception):
@@ -17,9 +17,10 @@ def validate_scaffold(target: Path) -> None:
     required = [
         "AGENTS.md",
         ".ai/harness.yml",
-        ".ai/assignments.yml",
-        ".ai/roles",
-        ".ai/runtimes",
+        ".ai/agent-catalog.yml",
+        ".ai/private/assignments.yml",
+        ".ai/agents",
+        ".ai/connectors",
         ".ai/rules",
         ".ai/schemas",
         ".claude/settings.json",
@@ -31,23 +32,40 @@ def validate_scaffold(target: Path) -> None:
     if errors:
         raise ValidationError("; ".join(errors))
 
-    roles = _load_named_yaml_dir(target / ".ai" / "roles", errors)
-    runtimes = _load_named_yaml_dir(target / ".ai" / "runtimes", errors)
-    assignments = _safe_load(target / ".ai" / "assignments.yml", errors)
+    agents = load_agents(target, errors)
+    connectors = _load_named_yaml_dir(target / ".ai" / "connectors", errors)
+    catalog = _safe_load(target / ".ai" / "agent-catalog.yml", errors)
+    bindings = _safe_load(target / ".ai" / "private" / "assignments.yml", errors)
 
-    assignment_map = assignments.get("assignments", {}) if isinstance(assignments, dict) else {}
-    for role_id, assignment in assignment_map.items():
-        if role_id not in roles:
-            errors.append(f"assignment references unknown role: {role_id}")
+    catalog_agents = catalog.get("agents", {}) if isinstance(catalog, dict) else {}
+    for agent_id, entry in catalog_agents.items():
+        if agent_id not in agents:
+            errors.append(f"agent catalog references missing agent doc: {agent_id}")
+        if isinstance(entry, dict):
+            for forbidden in ["runtime", "runtime_id", "connector", "model", "api_key"]:
+                if forbidden in entry:
+                    errors.append(f"agent catalog must not expose dispatcher binding key: {agent_id}.{forbidden}")
+
+    binding_map = bindings.get("bindings", {}) if isinstance(bindings, dict) else {}
+    for agent_id, binding in binding_map.items():
+        if agent_id not in catalog_agents:
+            errors.append(f"private binding references unknown catalog agent: {agent_id}")
             continue
-        runtime_id = assignment.get("runtime") if isinstance(assignment, dict) else None
-        if runtime_id not in runtimes:
-            errors.append(f"assignment for {role_id} references unknown runtime: {runtime_id}")
-        allowed = set(assignment.get("allowed_skills", []) or [])
-        role_allowed = set(roles[role_id].get("allowed_skills", []) or [])
-        unknown_skills = sorted(allowed - role_allowed)
-        if unknown_skills:
-            errors.append(f"assignment for {role_id} includes skills not allowed by role: {unknown_skills}")
+        connector_id = binding.get("connector") if isinstance(binding, dict) else None
+        profile = binding.get("profile") if isinstance(binding, dict) else None
+        connector = connectors.get(str(connector_id), {})
+        if connector_id not in connectors:
+            errors.append(f"binding for {agent_id} references unknown connector: {connector_id}")
+            continue
+        profiles = connector.get("profiles", {}) if isinstance(connector, dict) else {}
+        if profile not in profiles:
+            errors.append(f"binding for {agent_id} references unknown connector profile: {connector_id}.{profile}")
+
+    for agent_id in agents:
+        if agent_id not in catalog_agents:
+            errors.append(f"agent doc is not visible in agent catalog: {agent_id}")
+        if agent_id not in binding_map:
+            errors.append(f"agent doc has no private binding: {agent_id}")
 
     for schema_path in sorted((target / ".ai" / "schemas").glob("*.schema.json")):
         try:
@@ -66,28 +84,47 @@ def validate_scaffold(target: Path) -> None:
         raise ValidationError("; ".join(errors))
 
 
-def load_roles(target: Path) -> dict[str, dict[str, Any]]:
+def load_agents(target: Path, errors: list[str] | None = None) -> dict[str, dict[str, Any]]:
+    local_errors: list[str] = []
+    sink = errors if errors is not None else local_errors
+    data: dict[str, dict[str, Any]] = {}
+    for path in sorted((target / ".ai" / "agents").glob("*.md")):
+        item = _load_agent_doc(path, sink)
+        if not item:
+            continue
+        item_id = item.get("id")
+        if item_id != path.stem:
+            sink.append(f"{path.name} id must be {path.stem}, got {item_id}")
+            continue
+        item["doc_path"] = f".ai/agents/{path.name}"
+        data[path.stem] = item
+    if errors is None and local_errors:
+        raise ValidationError("; ".join(local_errors))
+    return data
+
+
+def load_agent_catalog(target: Path) -> dict[str, Any]:
     errors: list[str] = []
-    roles = _load_named_yaml_dir(target / ".ai" / "roles", errors)
+    catalog = _safe_load(target / ".ai" / "agent-catalog.yml", errors)
     if errors:
         raise ValidationError("; ".join(errors))
-    return roles
+    return catalog
 
 
-def load_runtimes(target: Path) -> dict[str, dict[str, Any]]:
+def load_private_bindings(target: Path) -> dict[str, Any]:
     errors: list[str] = []
-    runtimes = _load_named_yaml_dir(target / ".ai" / "runtimes", errors)
+    bindings = _safe_load(target / ".ai" / "private" / "assignments.yml", errors)
     if errors:
         raise ValidationError("; ".join(errors))
-    return runtimes
+    return bindings
 
 
-def load_assignments(target: Path) -> dict[str, Any]:
+def load_connectors(target: Path) -> dict[str, dict[str, Any]]:
     errors: list[str] = []
-    assignments = _safe_load(target / ".ai" / "assignments.yml", errors)
+    connectors = _load_named_yaml_dir(target / ".ai" / "connectors", errors)
     if errors:
         raise ValidationError("; ".join(errors))
-    return assignments
+    return connectors
 
 
 def load_harness_config(target: Path) -> dict[str, Any]:
@@ -96,6 +133,26 @@ def load_harness_config(target: Path) -> dict[str, Any]:
     if errors:
         raise ValidationError("; ".join(errors))
     return config
+
+
+def _load_agent_doc(path: Path, errors: list[str]) -> dict[str, Any]:
+    text = path.read_text()
+    if not text.startswith("---\n"):
+        errors.append(f"agent doc missing front matter: {path.name}")
+        return {}
+    end = text.find("\n---", 4)
+    if end == -1:
+        errors.append(f"agent doc front matter is not closed: {path.name}")
+        return {}
+    try:
+        value = loads_yaml(text[4:end])
+    except Exception as exc:
+        errors.append(f"invalid agent front matter {path.name}: {exc}")
+        return {}
+    if not isinstance(value, dict):
+        errors.append(f"agent front matter must be a mapping: {path.name}")
+        return {}
+    return value
 
 
 def _load_named_yaml_dir(directory: Path, errors: list[str]) -> dict[str, dict[str, Any]]:
@@ -129,3 +186,4 @@ def _is_git_tracked(target: Path, relpath: str) -> bool:
         stderr=subprocess.PIPE,
     )
     return result.returncode == 0
+

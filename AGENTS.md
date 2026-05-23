@@ -3,60 +3,39 @@
 ## Mission
 
 This repository is developed through a PR-gated AI automation development harness.
-All agents must work through issues, task specs, branches, validation, reviews, and pull requests.
+The scheduler targets agent identities. A deterministic dispatcher privately maps each agent identity to a CLI connector.
 
 ## Canonical Project Knowledge
 
 Read only what is relevant to the assigned task.
 
-- Architecture: `docs/architecture/`
-- ADRs: `docs/adr/`
-- Product specs: `docs/product-specs/`
-- Runbooks: `docs/runbooks/`
-- Role profiles: `.ai/roles/`
-- Runtime assignments: `.ai/assignments.yml`
+- Agent catalog visible to scheduler: `.ai/agent-catalog.yml`
+- Agent identity docs: `.ai/agents/`
+- Dispatcher-only bindings: `.ai/private/assignments.yml`
+- Connector contracts: `.ai/connectors/`
 - Skills: `.ai/skills/`
 - Review rubric: `.ai/rules/review-rubric.yml`
 - Security policy: `.ai/rules/security-policy.yml`
 - Merge policy: `.ai/rules/auto-merge-policy.yml`
 
-## Agent Operating Rules
+## Scheduler Boundary
 
-1. Confirm assigned role before acting.
-2. Confirm allowed paths before editing.
-3. Use the assigned branch and worktree only.
-4. Do not push to `main`.
-5. Do not approve your own PR unless explicitly allowed.
-6. Do not access production secrets.
-7. Do not bypass branch protection.
-8. Run required validation before opening or updating a PR.
-9. Attach an Evidence Bundle to every writer PR.
-10. Respond to every review finding with `fixed`, `rejected-with-reason`, or `escalated`.
+The scheduler must output only agent identities, tasks, dependencies, expected outputs, and risk. It must not choose Codex, Claude Code, model names, credentials, shell commands, or connector flags.
+
+## Dispatcher Boundary
+
+The deterministic dispatcher resolves `agent_id -> connector profile`, creates worktrees and branches, records traces, validates schemas, runs gates, and prepares pull request evidence.
 
 ## Workspace Isolation
 
 Every writer agent run must work in its own git worktree and branch.
-Reviewer, planner, and QA agents may use read-only snapshots unless explicitly assigned as writers.
+Reviewer, planner, scheduler, and read-only QA runs may use read-only snapshots unless explicitly assigned as writers.
 
 ## Runtime Adaptation
 
 `AGENTS.md` is the only canonical repository-level instruction source.
-Do not commit `CLAUDE.md`. Claude Code adapters may bridge to this file at run time with an ephemeral symlink, `@AGENTS.md` import, or injected instructions.
-
-## Skills
-
-Use only skills allowed by the resolved role assignment.
-Do not treat a skill as permission escalation.
+Do not commit `CLAUDE.md`. Claude Code connectors may inject this file explicitly with bare non-interactive CLI flags.
 
 ## PR Requirements
 
-Every writer PR must include:
-
-- linked issue
-- task summary
-- changed files
-- tests added or updated
-- validation results
-- risk notes
-- rollback plan
-- unresolved questions
+Every writer PR must include linked issue, task summary, changed files, tests, validation results, risk notes, rollback plan, unresolved questions, agent identity, connector, and run id.

@@ -1,0 +1,91 @@
+version: 1
+agents:
+  scheduler-agent:
+    type: read-only-orchestrator
+    purpose: Decide next agent identities to dispatch from visible state.
+    outputs:
+      - schedule_plan
+    can_write_repo: false
+  issue-compiler:
+    type: read-only
+    purpose: Convert raw user requests into structured issue specs.
+    outputs:
+      - issue_spec
+    can_write_repo: false
+  architect:
+    type: conditional-writer
+    purpose: Produce architecture plans, ADRs, dependency boundaries, and task graphs.
+    outputs:
+      - task_graph
+      - adr_pr_optional
+    can_write_repo: true
+    write_requires_pr: true
+  backend-implementer:
+    type: writer
+    purpose: Implement backend tasks and tests.
+    outputs:
+      - branch
+      - pr
+      - evidence_bundle
+    allowed_domains:
+      - backend
+      - api
+      - tests
+    can_write_repo: true
+    write_requires_pr: true
+  frontend-implementer:
+    type: writer
+    purpose: Implement UI tasks and frontend tests.
+    outputs:
+      - branch
+      - pr
+      - evidence_bundle
+    allowed_domains:
+      - frontend
+      - ui
+      - tests
+    can_write_repo: true
+    write_requires_pr: true
+  qa-agent:
+    type: conditional-writer
+    purpose: Reproduce bugs, add tests, run validation, and report coverage gaps.
+    outputs:
+      - test_report
+      - test_pr_optional
+    can_write_repo: true
+    write_requires_pr: true
+  security-reviewer:
+    type: read-only
+    purpose: Review security risks and produce structured findings.
+    outputs:
+      - security_findings
+    can_write_repo: false
+  pr-reviewer:
+    type: read-only
+    purpose: Review PR diffs and produce structured findings.
+    outputs:
+      - review_findings
+    can_write_repo: false
+  ci-repair-agent:
+    type: writer
+    purpose: Repair CI, lint, typecheck, or test failures.
+    outputs:
+      - pr_update_or_repair_pr
+      - evidence_bundle
+    can_write_repo: true
+    write_requires_pr: true
+  skill-curator:
+    type: writer
+    purpose: Convert repeated failures into skill, eval, lint, schema, or doc updates.
+    outputs:
+      - skill_update_pr
+    can_write_repo: true
+    write_requires_pr: true
+  release-agent:
+    type: conditional-writer
+    purpose: Prepare release checklists, changelogs, and release readiness findings.
+    outputs:
+      - release_checklist
+      - changelog_pr_optional
+    can_write_repo: true
+    write_requires_pr: true

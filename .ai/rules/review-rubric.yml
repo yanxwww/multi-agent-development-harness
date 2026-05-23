@@ -8,5 +8,5 @@ reviewer_must_check:
   - scope matches issue
   - tests cover acceptance criteria
   - validation evidence is fresh
-  - permissions match role profile
+  - permissions match agent identity
   - rollback plan is credible
