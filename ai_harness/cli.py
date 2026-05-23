@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .connectors import render_connector_command
 from .dispatch import dispatch_plan
+from .executor import run_connector_command
 from .runs import create_run, render_pr_body
 from .scaffold import init_scaffold
 from .validation import validate_scaffold
@@ -72,6 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Schema path passed to the connector template.",
     )
 
+    run_connector_parser = subparsers.add_parser("run-connector", help="Execute a rendered connector command.")
+    run_connector_parser.add_argument("--target", default=".", help="Target repository root.")
+    run_connector_parser.add_argument("--run", required=True, help="Run id.")
+    run_connector_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per attempt.")
+    run_connector_parser.add_argument("--retries", type=int, default=0, help="Retry count after failed attempts.")
+
     return parser
 
 
@@ -127,6 +134,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"Wrote connector command to {command_path}")
             return 0
+        if args.command == "run-connector":
+            execution = run_connector_command(
+                target=target,
+                run_id=args.run,
+                timeout_seconds=args.timeout,
+                retries=args.retries,
+            )
+            print(f"Connector run {execution['status']} for {args.run}")
+            return 0 if execution["status"] == "succeeded" else 1
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

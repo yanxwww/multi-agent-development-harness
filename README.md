@@ -20,6 +20,7 @@ python3 -m ai_harness create-run --target . --issue 123 --agent backend-implemen
 python3 -m ai_harness pr-body --target . --run run-20260523-001
 python3 -m ai_harness dispatch-plan --target . --issue 123 --plan schedule_plan.json --run-id run-schedule-001 --no-worktree
 python3 -m ai_harness connector-command --target . --run run-20260523-001
+python3 -m ai_harness run-connector --target . --run run-20260523-001 --timeout 900 --retries 1
 ```
 
 Installable entry point:
@@ -49,6 +50,8 @@ The deterministic dispatcher validates the plan, resolves `agent_id -> connector
 
 `connector-command` renders the CLI command that a future process supervisor will execute. It writes `.ai/runs/<run-id>/connector_command.json` with `argv`, display text, connector id, connector profile, workspace, and output schema. It does not execute Codex or Claude Code.
 
+`run-connector` executes `connector_command.json` with a per-attempt timeout and retry count. It writes `stdout.log`, `stderr.log`, per-attempt logs, `connector_events.jsonl` for JSON stdout lines, `connector_execution.json`, and trace events in `trace.jsonl`.
+
 ## Current MVP Boundaries
 
-This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, and renders deterministic connector commands. It does not invoke Codex or Claude Code, open GitHub PRs, install skills into external runtimes, or enforce branch locks. Those belong in the next orchestration layer.
+This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, renders deterministic connector commands, and can execute a rendered connector command with captured logs and trace. It does not open GitHub PRs, install skills into external runtimes, or enforce branch locks. Those belong in the next orchestration layer.

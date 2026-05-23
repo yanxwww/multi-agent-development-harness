@@ -1,4 +1,5 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -204,6 +205,106 @@ class HarnessCliTests(unittest.TestCase):
             self.assertIn("--append-system-prompt-file", command["argv"])
             self.assertIn("AGENTS.md", command["argv"])
 
+    def test_run_connector_captures_stdout_stderr_json_events_and_trace(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_run(root, "run-exec-001")
+            command = {
+                "run_id": "run-exec-001",
+                "agent_id": "backend-implementer",
+                "connector": "test-connector",
+                "profile": "test-profile",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    "import json,sys; print(json.dumps({'event':'started','value':1})); print('plain stdout'); print('plain stderr', file=sys.stderr)",
+                ],
+            }
+            (run_dir / "connector_command.json").write_text(json.dumps(command))
+            self.assertEqual(main(["run-connector", "--target", str(root), "--run", "run-exec-001", "--timeout", "5"]), 0)
+
+            execution = json.loads((run_dir / "connector_execution.json").read_text())
+            self.assertEqual(execution["status"], "succeeded")
+            self.assertEqual(execution["final_exit_code"], 0)
+            self.assertEqual(len(execution["attempts"]), 1)
+            self.assertIn("plain stdout", (run_dir / "stdout.log").read_text())
+            self.assertIn("plain stderr", (run_dir / "stderr.log").read_text())
+            events = (run_dir / "connector_events.jsonl").read_text().splitlines()
+            self.assertEqual(json.loads(events[0])["event"], "started")
+            trace = (run_dir / "trace.jsonl").read_text()
+            self.assertIn("connector_attempt_finished", trace)
+            self.assertIn("connector_run_finished", trace)
+
+    def test_run_connector_retries_until_success(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_run(root, "run-exec-002")
+            counter = root / "counter.txt"
+            script = (
+                "from pathlib import Path\n"
+                f"p = Path({str(counter)!r})\n"
+                "count = int(p.read_text()) if p.exists() else 0\n"
+                "p.write_text(str(count + 1))\n"
+                "print('{\"event\":\"attempt\",\"count\":%d}' % (count + 1))\n"
+                "raise SystemExit(1 if count == 0 else 0)\n"
+            )
+            command = {
+                "run_id": "run-exec-002",
+                "agent_id": "backend-implementer",
+                "connector": "test-connector",
+                "profile": "test-profile",
+                "argv": [sys.executable, "-c", script],
+            }
+            (run_dir / "connector_command.json").write_text(json.dumps(command))
+            self.assertEqual(
+                main(["run-connector", "--target", str(root), "--run", "run-exec-002", "--timeout", "5", "--retries", "1"]),
+                0,
+            )
+
+            execution = json.loads((run_dir / "connector_execution.json").read_text())
+            self.assertEqual(execution["status"], "succeeded")
+            self.assertEqual(execution["final_exit_code"], 0)
+            self.assertEqual([attempt["exit_code"] for attempt in execution["attempts"]], [1, 0])
+            self.assertEqual(counter.read_text(), "2")
+            self.assertEqual(len((run_dir / "connector_events.jsonl").read_text().splitlines()), 2)
+
+    def test_run_connector_timeout_records_failed_execution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_run(root, "run-exec-003")
+            command = {
+                "run_id": "run-exec-003",
+                "agent_id": "backend-implementer",
+                "connector": "test-connector",
+                "profile": "test-profile",
+                "argv": [sys.executable, "-c", "import time; time.sleep(2)"],
+            }
+            (run_dir / "connector_command.json").write_text(json.dumps(command))
+            self.assertEqual(main(["run-connector", "--target", str(root), "--run", "run-exec-003", "--timeout", "0.1"]), 1)
+
+            execution = json.loads((run_dir / "connector_execution.json").read_text())
+            self.assertEqual(execution["status"], "failed")
+            self.assertTrue(execution["attempts"][0]["timed_out"])
+            self.assertIsNone(execution["attempts"][0]["exit_code"])
+
+    def test_run_connector_executes_from_declared_workspace(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            run_dir = self._make_manual_run(root, "run-exec-004")
+            command = {
+                "run_id": "run-exec-004",
+                "agent_id": "backend-implementer",
+                "connector": "test-connector",
+                "profile": "test-profile",
+                "workspace": "workspace",
+                "argv": [sys.executable, "-c", "from pathlib import Path; print(Path.cwd().name)"],
+            }
+            (run_dir / "connector_command.json").write_text(json.dumps(command))
+            self.assertEqual(main(["run-connector", "--target", str(root), "--run", "run-exec-004", "--timeout", "5"]), 0)
+            self.assertEqual((run_dir / "stdout.log").read_text().strip(), "workspace")
+
     def test_dispatch_plan_targets_agent_identity_and_uses_private_binding(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -269,6 +370,24 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(second["connector_profile"], "reviewer-readonly")
             child = root / ".ai" / "runs" / "run-schedule-001-T3-backend-implementer" / "run.json"
             self.assertEqual(json.loads(child.read_text())["agent_id"], "backend-implementer")
+
+    def _make_manual_run(self, root: Path, run_id: str) -> Path:
+        main(["init", "--target", str(root)])
+        run_dir = root / ".ai" / "runs" / run_id
+        run_dir.mkdir(parents=True)
+        (run_dir / "run.json").write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "agent_id": "backend-implementer",
+                    "connector": "test-connector",
+                    "connector_profile": "test-profile",
+                    "state": "planned",
+                }
+            )
+        )
+        (run_dir / "trace.jsonl").write_text("")
+        return run_dir
 
     def test_dispatch_plan_rejects_runtime_visible_to_scheduler(self):
         with tempfile.TemporaryDirectory() as temp:
