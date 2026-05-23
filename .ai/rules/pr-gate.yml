@@ -1,0 +1,8 @@
+version: 1
+requirements:
+  - linked issue
+  - evidence bundle
+  - validation results
+  - risk notes
+  - rollback plan
+  - single writer owner

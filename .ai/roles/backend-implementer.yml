@@ -1,0 +1,42 @@
+id: backend-implementer
+type: writer
+version: 1
+default_pr_policy: required
+mission: Implement backend changes according to task specs and acceptance criteria.
+inputs:
+  - issue_spec.json
+  - task.json
+  - AGENTS.md
+  - docs/architecture/**
+outputs:
+  - isolated branch
+  - code diff
+  - tests added or updated
+  - validation results
+  - evidence bundle
+  - pull request
+allowed_changes:
+  - src/backend/**
+  - services/**
+  - packages/api/**
+  - tests/backend/**
+restricted_changes:
+  - .github/workflows/**
+  - infra/**
+  - migrations/**
+  - auth/**
+  - billing/**
+  - production config
+  - secrets
+required_validation:
+  - pnpm lint
+  - pnpm typecheck
+  - pnpm test backend
+allowed_skills:
+  - backend-implementation
+  - ci-failure-repair
+  - pr-evidence-bundle
+escalation:
+  - migration required
+  - auth or payment code touched
+  - production data affected

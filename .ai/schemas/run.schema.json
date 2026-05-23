@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "run_id",
+    "role_id",
+    "runtime_id",
+    "issue_id",
+    "state"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string"
+    },
+    "role_id": {
+      "type": "string"
+    },
+    "runtime_id": {
+      "type": "string"
+    },
+    "issue_id": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    }
+  }
+}

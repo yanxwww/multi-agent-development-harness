@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ],
+    "deny": [
+      "Read(.env*)",
+      "Read(**/secrets/**)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)"
+    ]
+  },
+  "harness": {
+    "canonical_instruction": "AGENTS.md",
+    "do_not_commit_claude_md": true
+  }
+}

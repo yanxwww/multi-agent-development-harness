@@ -1,0 +1,31 @@
+id: skill-curator
+type: writer
+version: 1
+default_pr_policy: required
+mission: Convert repeated feedback patterns into skill, eval, lint, schema, or documentation updates.
+inputs:
+  - traces
+  - review findings
+  - CI failures
+outputs:
+  - skill patch
+  - eval update
+  - rollback notes
+  - pull request
+allowed_changes:
+  - .ai/skills/**
+  - .ai/evals/**
+  - .ai/rules/**
+  - .ai/schemas/**
+  - docs/runbooks/**
+restricted_changes:
+  - production code
+  - secrets
+required_validation:
+  - harness validate
+allowed_skills:
+  - skill-evolution
+  - pr-evidence-bundle
+escalation:
+  - skill changes broaden permissions
+  - eval cannot prove improvement

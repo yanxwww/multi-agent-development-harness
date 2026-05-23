@@ -1,0 +1,7 @@
+.worktrees/
+CLAUDE.md
+.ai/runs/*
+!.ai/runs/.gitkeep
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -1,0 +1,15 @@
+version: 1
+canonical_instruction: AGENTS.md
+run_id_prefix: run
+paths:
+  worktrees: .worktrees
+  runs: .ai/runs
+  roles: .ai/roles
+  runtimes: .ai/runtimes
+policies:
+  writer_run_pr_policy: required
+  one_pr_owner: true
+  reviewer_writes_implementation_branch: false
+  claude_md_committed: false
+branch_template: ai/{issue_id}/{role_id}/{run_id}
+worktree_template: .worktrees/{run_id}-{role_id}

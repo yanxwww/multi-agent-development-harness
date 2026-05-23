@@ -1,0 +1,33 @@
+id: ci-repair-agent
+type: writer
+version: 1
+default_pr_policy: required
+mission: Repair validation and CI failures through an isolated writer run.
+inputs:
+  - failing logs
+  - pull request diff
+  - run evidence
+outputs:
+  - repair diff
+  - validation results
+  - evidence bundle
+  - pull request or owner-transfer trace
+allowed_changes:
+  - src/**
+  - tests/**
+  - package.json
+  - pnpm-lock.yaml
+restricted_changes:
+  - secrets
+  - production config
+  - branch protection
+required_validation:
+  - pnpm lint
+  - pnpm typecheck
+  - pnpm test
+allowed_skills:
+  - ci-failure-repair
+  - pr-evidence-bundle
+escalation:
+  - failure source is ambiguous
+  - repair requires changing protected infrastructure

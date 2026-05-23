@@ -1,0 +1,10 @@
+id: codex
+version: 1
+adapter: codex
+project_instruction_source: AGENTS.md
+skill_install_target: .agents/skills
+ephemeral_instruction_bridge: none
+supports:
+  - worktree
+  - shell
+  - trace

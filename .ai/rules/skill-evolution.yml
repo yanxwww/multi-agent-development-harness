@@ -1,0 +1,10 @@
+version: 1
+trigger_sources:
+  - repeated review findings
+  - repeated CI failures
+  - trace analysis
+skill_pr_requirements:
+  - before trace
+  - after eval
+  - rollback plan
+  - permission impact notes

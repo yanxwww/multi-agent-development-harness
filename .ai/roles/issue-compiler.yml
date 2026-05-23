@@ -1,0 +1,20 @@
+id: issue-compiler
+type: read-only
+version: 1
+default_pr_policy: none
+mission: Compile user requests into issue specs and acceptance criteria.
+inputs:
+  - user request
+  - product specs
+outputs:
+  - issue_spec.json
+  - issue comment
+allowed_changes: []
+restricted_changes:
+  - "**/*"
+required_validation: []
+allowed_skills:
+  - issue-compiler
+escalation:
+  - requirements conflict
+  - acceptance criteria cannot be made testable

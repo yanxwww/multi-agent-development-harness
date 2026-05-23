@@ -1,0 +1,24 @@
+version: 1
+skills:
+  issue-compiler:
+    description: Compile user requests into issue specs.
+  architecture-planning:
+    description: Produce task graphs and architecture findings.
+  backend-implementation:
+    description: Implement backend changes under role boundaries.
+  frontend-implementation:
+    description: Implement frontend changes under role boundaries.
+  test-design:
+    description: Reproduce behavior and add tests when assigned as writer.
+  security-review:
+    description: Review authentication, authorization, secrets, and data risks.
+  pr-reviewer:
+    description: Produce structured pull request findings.
+  ci-failure-repair:
+    description: Repair validation and CI failures.
+  pr-evidence-bundle:
+    description: Produce PR evidence, validation, risk, and rollback notes.
+  skill-evolution:
+    description: Convert repeated findings into skill, eval, or rule updates.
+  release-checklist:
+    description: Prepare release readiness findings and changelog updates.

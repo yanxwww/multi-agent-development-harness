@@ -1,0 +1,7 @@
+version: 1
+required_results:
+  - lint
+  - typecheck
+  - tests
+  - role-specific validation
+failure_policy: return_to_pr_owner

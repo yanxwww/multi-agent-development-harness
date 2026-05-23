@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "severity",
+    "file",
+    "body"
+  ],
+  "properties": {
+    "severity": {
+      "enum": [
+        "blocking",
+        "major",
+        "minor",
+        "note"
+      ]
+    },
+    "file": {
+      "type": "string"
+    },
+    "line": {
+      "type": "integer"
+    },
+    "body": {
+      "type": "string"
+    }
+  }
+}

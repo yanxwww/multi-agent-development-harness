@@ -1,0 +1,8 @@
+version: 1
+human_gate_required:
+  - secrets
+  - production data
+  - authentication
+  - authorization
+  - payment flows
+  - migrations

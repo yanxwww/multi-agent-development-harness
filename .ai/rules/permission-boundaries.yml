@@ -1,0 +1,7 @@
+version: 1
+hard_denies:
+  - production secrets
+  - bypass branch protection
+  - push directly to main
+  - approve own PR
+  - modify another writer run worktree

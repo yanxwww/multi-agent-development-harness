@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "skill_id",
+    "before_trace",
+    "after_eval",
+    "rollback"
+  ],
+  "properties": {
+    "skill_id": {
+      "type": "string"
+    },
+    "before_trace": {
+      "type": "string"
+    },
+    "after_eval": {
+      "type": "string"
+    },
+    "rollback": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+version: 1
+states:
+  - planned
+  - workspace_ready
+  - running
+  - validation_ready
+  - pr_ready
+  - review_ready
+  - repair_required
+  - merge_ready
+  - failed
+transitions:
+  - planned -> workspace_ready
+  - workspace_ready -> running
+  - running -> validation_ready
+  - running -> failed
+  - validation_ready -> pr_ready
+  - validation_ready -> repair_required
+  - pr_ready -> review_ready
+  - review_ready -> merge_ready
+  - review_ready -> repair_required
+  - repair_required -> running

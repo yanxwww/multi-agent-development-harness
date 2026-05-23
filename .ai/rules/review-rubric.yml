@@ -1,0 +1,12 @@
+version: 1
+finding_levels:
+  - blocking
+  - major
+  - minor
+  - note
+reviewer_must_check:
+  - scope matches issue
+  - tests cover acceptance criteria
+  - validation evidence is fresh
+  - permissions match role profile
+  - rollback plan is credible

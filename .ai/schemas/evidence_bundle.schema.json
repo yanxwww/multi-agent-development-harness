@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "agent",
+    "issue",
+    "scope",
+    "validation",
+    "risk",
+    "rollback"
+  ],
+  "properties": {
+    "agent": {
+      "type": "object"
+    },
+    "issue": {
+      "type": "object"
+    },
+    "scope": {
+      "type": "string"
+    },
+    "validation": {
+      "type": "array"
+    },
+    "risk": {
+      "type": "string"
+    },
+    "rollback": {
+      "type": "string"
+    }
+  }
+}
