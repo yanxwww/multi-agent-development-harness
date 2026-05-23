@@ -23,6 +23,7 @@ The CLI provides:
 - `harness validate` to check scaffold consistency.
 - `harness create-run` to allocate a run id, branch name, worktree path, private connector binding, trace skeleton, and evidence bundle for one agent identity.
 - `harness dispatch-plan` to validate a runtime-blind SchedulePlan and prepare deterministic AgentRun records through private connector bindings.
+- `harness connector-command` to render the Codex CLI or Claude Code CLI command for a prepared AgentRun without executing it.
 - `harness pr-body` to render a PR body from run evidence.
 
 The MVP includes connector contract metadata for Codex CLI and Claude Code CLI, but execution is intentionally deferred. This keeps the architecture neutral and testable before integrating actual agent processes.

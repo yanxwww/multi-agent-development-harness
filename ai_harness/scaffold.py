@@ -568,7 +568,9 @@ profiles:
     tools: shell-and-edit
 command_templates:
   scheduler-readonly: codex exec --cd {workspace} --sandbox read-only --json --output-schema {output_schema}
+  readonly-json: codex exec --cd {workspace} --sandbox read-only --json --output-schema {output_schema}
   writer-workspace: codex exec --cd {workspace} --sandbox workspace-write --json --output-schema {output_schema}
+  qa-workspace: codex exec --cd {workspace} --sandbox workspace-write --json --output-schema {output_schema}
 """,
     "claude-code-cli": """id: claude-code-cli
 version: 1
@@ -594,7 +596,11 @@ profiles:
     tools: Read,Grep,Glob
 command_templates:
   scheduler-readonly: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
+  planner: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
   writer-workspace: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
+  reviewer-readonly: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
+  skill-writer: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
+  release-readonly: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
 """,
 }
 

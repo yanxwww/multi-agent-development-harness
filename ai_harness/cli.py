@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from .connectors import render_connector_command
 from .dispatch import dispatch_plan
 from .runs import create_run, render_pr_body
 from .scaffold import init_scaffold
@@ -62,6 +63,15 @@ def build_parser() -> argparse.ArgumentParser:
     pr_parser.add_argument("--target", default=".", help="Target repository root.")
     pr_parser.add_argument("--run", required=True, help="Run id.")
 
+    connector_parser = subparsers.add_parser("connector-command", help="Render the CLI connector command for a run.")
+    connector_parser.add_argument("--target", default=".", help="Target repository root.")
+    connector_parser.add_argument("--run", required=True, help="Run id.")
+    connector_parser.add_argument(
+        "--output-schema",
+        default=".ai/schemas/agent_result.schema.json",
+        help="Schema path passed to the connector template.",
+    )
+
     return parser
 
 
@@ -108,6 +118,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "pr-body":
             body_path = render_pr_body(target=target, run_id=args.run)
             print(f"Wrote PR body to {body_path}")
+            return 0
+        if args.command == "connector-command":
+            command_path = render_connector_command(
+                target=target,
+                run_id=args.run,
+                output_schema=args.output_schema,
+            )
+            print(f"Wrote connector command to {command_path}")
             return 0
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)

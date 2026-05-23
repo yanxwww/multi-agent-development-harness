@@ -22,4 +22,8 @@ profiles:
     tools: Read,Grep,Glob
 command_templates:
   scheduler-readonly: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
+  planner: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
   writer-workspace: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
+  reviewer-readonly: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
+  skill-writer: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
+  release-readonly: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}

@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+import json
+import shlex
+from pathlib import Path
+from typing import Any
+
+from .validation import load_connectors, validate_scaffold
+
+
+class ConnectorError(Exception):
+    pass
+
+
+def render_connector_command(
+    target: Path,
+    run_id: str,
+    output_schema: str = ".ai/schemas/agent_result.schema.json",
+) -> Path:
+    validate_scaffold(target)
+    run_dir = target / ".ai" / "runs" / run_id
+    run_path = run_dir / "run.json"
+    if not run_path.exists():
+        raise ConnectorError(f"run metadata is missing for {run_id}")
+
+    run = json.loads(run_path.read_text())
+    connectors = load_connectors(target)
+    connector_id = run.get("connector")
+    profile = run.get("connector_profile")
+    connector = connectors.get(str(connector_id))
+    if not connector:
+        raise ConnectorError(f"unknown connector: {connector_id}")
+
+    templates = connector.get("command_templates", {}) if isinstance(connector, dict) else {}
+    template = templates.get(str(profile))
+    if not template:
+        raise ConnectorError(f"connector profile has no command template: {connector_id}.{profile}")
+
+    workspace = run.get("worktree") or "."
+    workspace_path = target / workspace
+    schema_path = target / output_schema
+    values = {
+        "workspace": shlex.quote(str(workspace_path)),
+        "output_schema": shlex.quote(str(schema_path)),
+    }
+    display = template.format(**values)
+    command: dict[str, Any] = {
+        "run_id": run_id,
+        "agent_id": run.get("agent_id"),
+        "connector": connector_id,
+        "profile": profile,
+        "executable": connector.get("executable"),
+        "workspace": workspace,
+        "output_schema": output_schema,
+        "display": display,
+        "argv": shlex.split(display),
+    }
+    output_path = run_dir / "connector_command.json"
+    output_path.write_text(json.dumps(command, indent=2) + "\n")
+    return output_path
+

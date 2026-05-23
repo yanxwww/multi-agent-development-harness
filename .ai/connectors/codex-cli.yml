@@ -16,4 +16,6 @@ profiles:
     tools: shell-and-edit
 command_templates:
   scheduler-readonly: codex exec --cd {workspace} --sandbox read-only --json --output-schema {output_schema}
+  readonly-json: codex exec --cd {workspace} --sandbox read-only --json --output-schema {output_schema}
   writer-workspace: codex exec --cd {workspace} --sandbox workspace-write --json --output-schema {output_schema}
+  qa-workspace: codex exec --cd {workspace} --sandbox workspace-write --json --output-schema {output_schema}

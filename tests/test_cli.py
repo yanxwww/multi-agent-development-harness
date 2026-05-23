@@ -141,6 +141,69 @@ class HarnessCliTests(unittest.TestCase):
             self.assertIn("Connector: codex-cli", body)
             self.assertIn("Closes #123", body)
 
+    def test_connector_command_renders_codex_writer_command(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            task.write_text(json.dumps({"summary": "Add API"}))
+            main(
+                [
+                    "create-run",
+                    "--target",
+                    str(root),
+                    "--issue",
+                    "123",
+                    "--agent",
+                    "backend-implementer",
+                    "--task",
+                    str(task),
+                    "--run-id",
+                    "run-command-001",
+                    "--no-worktree",
+                ]
+            )
+            self.assertEqual(main(["connector-command", "--target", str(root), "--run", "run-command-001"]), 0)
+            command = json.loads((root / ".ai" / "runs" / "run-command-001" / "connector_command.json").read_text())
+            self.assertEqual(command["connector"], "codex-cli")
+            self.assertEqual(command["profile"], "writer-workspace")
+            self.assertEqual(command["argv"][:2], ["codex", "exec"])
+            self.assertIn("--cd", command["argv"])
+            self.assertIn(".worktrees/run-command-001-backend-implementer", command["display"])
+            self.assertIn(".ai/schemas/agent_result.schema.json", command["display"])
+
+    def test_connector_command_renders_claude_readonly_command(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            task.write_text(json.dumps({"summary": "Review PR"}))
+            main(
+                [
+                    "create-run",
+                    "--target",
+                    str(root),
+                    "--issue",
+                    "123",
+                    "--agent",
+                    "pr-reviewer",
+                    "--task",
+                    str(task),
+                    "--run-id",
+                    "run-command-002",
+                    "--mode",
+                    "read_only",
+                    "--no-worktree",
+                ]
+            )
+            self.assertEqual(main(["connector-command", "--target", str(root), "--run", "run-command-002"]), 0)
+            command = json.loads((root / ".ai" / "runs" / "run-command-002" / "connector_command.json").read_text())
+            self.assertEqual(command["connector"], "claude-code-cli")
+            self.assertEqual(command["profile"], "reviewer-readonly")
+            self.assertEqual(command["argv"][:3], ["claude", "--bare", "-p"])
+            self.assertIn("--append-system-prompt-file", command["argv"])
+            self.assertIn("AGENTS.md", command["argv"])
+
     def test_dispatch_plan_targets_agent_identity_and_uses_private_binding(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
