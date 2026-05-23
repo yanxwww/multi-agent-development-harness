@@ -9,6 +9,7 @@ from .dispatch import dispatch_plan
 from .executor import run_connector_command
 from .gates import run_pr_gate, run_validation_gate
 from .orchestrator import dispatch_run
+from .pull_requests import render_pr_command, run_pr_command
 from .runs import create_run, render_pr_body
 from .scaffold import init_scaffold
 from .validation import validate_scaffold
@@ -91,6 +92,18 @@ def build_parser() -> argparse.ArgumentParser:
     pr_gate_parser.add_argument("--target", default=".", help="Target repository root.")
     pr_gate_parser.add_argument("--run", required=True, help="Run id.")
 
+    pr_command_parser = subparsers.add_parser("pr-command", help="Render a gh pr create command for a gated writer run.")
+    pr_command_parser.add_argument("--target", default=".", help="Target repository root.")
+    pr_command_parser.add_argument("--run", required=True, help="Run id.")
+    pr_command_parser.add_argument("--base", default="main", help="Base branch for the pull request.")
+    pr_command_parser.add_argument("--draft", action="store_true", help="Render the pull request as a draft.")
+    pr_command_parser.add_argument("--executable", default="gh", help="GitHub CLI executable.")
+
+    run_pr_command_parser = subparsers.add_parser("run-pr-command", help="Execute a rendered PR command.")
+    run_pr_command_parser.add_argument("--target", default=".", help="Target repository root.")
+    run_pr_command_parser.add_argument("--run", required=True, help="Run id.")
+    run_pr_command_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds for the PR command.")
+
     dispatch_run_parser = subparsers.add_parser("dispatch-run", help="Dispatch, execute, validate, and gate a SchedulePlan.")
     dispatch_run_parser.add_argument("--target", default=".", help="Target repository root.")
     dispatch_run_parser.add_argument("--issue", required=True, help="Issue id, such as 123 or issue-123.")
@@ -99,6 +112,13 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch_run_parser.add_argument("--base-ref", default="HEAD", help="Git base ref for worktree creation.")
     dispatch_run_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per connector/validation attempt.")
     dispatch_run_parser.add_argument("--retries", type=int, default=0, help="Retry count after failed connector attempts.")
+    dispatch_run_parser.add_argument(
+        "--prepare-pr-command",
+        action="store_true",
+        help="Render gh pr create commands for gated writer child runs.",
+    )
+    dispatch_run_parser.add_argument("--pr-base", default="main", help="Base branch for prepared PR commands.")
+    dispatch_run_parser.add_argument("--draft-pr", action="store_true", help="Render prepared PR commands as draft PRs.")
     dispatch_run_parser.add_argument(
         "--validation-mode",
         choices=["run", "skip"],
@@ -188,6 +208,20 @@ def main(argv: list[str] | None = None) -> int:
             gate = run_pr_gate(target=target, run_id=args.run)
             print(f"PR gate {gate['status']} for {args.run}")
             return 0 if gate["status"] in {"passed", "not_required"} else 1
+        if args.command == "pr-command":
+            command_path = render_pr_command(
+                target=target,
+                run_id=args.run,
+                base=args.base,
+                draft=args.draft,
+                executable=args.executable,
+            )
+            print(f"Wrote PR command to {command_path}")
+            return 0
+        if args.command == "run-pr-command":
+            execution = run_pr_command(target=target, run_id=args.run, timeout_seconds=args.timeout)
+            print(f"PR command {execution['status']} for {args.run}")
+            return 0 if execution["status"] == "succeeded" else 1
         if args.command == "dispatch-run":
             summary = dispatch_run(
                 target=target,
@@ -199,6 +233,9 @@ def main(argv: list[str] | None = None) -> int:
                 validation_mode=args.validation_mode,
                 create_worktree=not args.no_worktree,
                 base_ref=args.base_ref,
+                prepare_pr_command=args.prepare_pr_command,
+                pr_base=args.pr_base,
+                draft_pr=args.draft_pr,
             )
             print(f"Dispatch run {summary['status']} for {args.run_id}")
             return 0 if summary["status"] == "succeeded" else 1

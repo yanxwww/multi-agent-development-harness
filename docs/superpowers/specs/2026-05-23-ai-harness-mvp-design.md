@@ -29,8 +29,10 @@ The CLI provides:
 - `harness pr-gate` to render a PR body for writer runs and block runs missing connector, validation, evidence, or PR body requirements.
 - `harness dispatch-run` to chain `dispatch-plan -> connector-command -> run-connector -> validation-gate -> pr-gate` deterministically.
 - `harness pr-body` to render a PR body from run evidence.
+- `harness pr-command` to render a gated `gh pr create` command after PR readiness passes.
+- `harness run-pr-command` to execute a rendered PR command with stdout/stderr, timeout, exit code, and trace capture.
 
-The MVP includes connector contract metadata for Codex CLI and Claude Code CLI. Connector execution is mediated through rendered `connector_command.json` artifacts so the dispatcher remains deterministic, traceable, and testable.
+The MVP includes connector contract metadata for Codex CLI and Claude Code CLI. Connector and PR execution are mediated through rendered command artifacts so the dispatcher remains deterministic, traceable, and testable.
 
 ## Repository Contract
 
@@ -109,7 +111,7 @@ The scheduler sees only agent identities and produces a `SchedulePlan`:
 
 The dispatcher sees `.ai/private/assignments.yml` and resolves `backend-implementer -> codex-cli / writer-workspace`. Connector, model, credentials, and CLI flags are not part of scheduler output.
 
-`dispatch-run` keeps this boundary intact. It first prepares child AgentRun records from the scheduler-visible plan, then the dispatcher privately renders and executes each connector command, records connector execution, runs validation, and evaluates PR readiness.
+`dispatch-run` keeps this boundary intact. It first prepares child AgentRun records from the scheduler-visible plan, then the dispatcher privately renders and executes each connector command, records connector execution, runs validation, and evaluates PR readiness. When `--prepare-pr-command` is enabled, it also renders PR creation commands for child writer runs that pass the PR gate.
 
 ## Run Model
 
@@ -148,6 +150,8 @@ Every AI PR body includes:
 - risk notes
 - rollback plan
 - unresolved questions
+
+After the PR gate passes, `harness pr-command` can produce a deterministic `gh pr create` command artifact. `harness run-pr-command` can execute that artifact if the local GitHub CLI is authenticated and the branch is ready for publication. The command artifact is separate from gate evaluation so audit and execution can be split.
 
 ## State Machine
 
@@ -189,12 +193,19 @@ Future orchestrators can enforce the same state transitions.
 - validation passed or was explicitly skipped
 - PR body exists
 
+`harness pr-command` checks PR command readiness:
+
+- run is a writer run
+- `pr_gate.json` status is `passed`
+- PR body exists
+- branch name is present
+
 ## Non-Goals
 
 The MVP does not:
 
-- create GitHub PRs
 - run CI
+- create commits or manage branch push policy
 - install skills into external agent environments
 - implement stacked PRs or integration PRs
 - enforce branch locks

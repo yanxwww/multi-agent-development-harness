@@ -387,6 +387,71 @@ class HarnessCliTests(unittest.TestCase):
             self.assertIn("validation gate is failed", gate["reasons"])
             self.assertTrue((run_dir / "pr-body.md").exists())
 
+    def test_pr_command_requires_passed_pr_gate_and_renders_gh_create(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            task.write_text(json.dumps({"summary": "Add API"}))
+            main(
+                [
+                    "create-run",
+                    "--target",
+                    str(root),
+                    "--issue",
+                    "123",
+                    "--agent",
+                    "backend-implementer",
+                    "--task",
+                    str(task),
+                    "--run-id",
+                    "run-pr-command-001",
+                    "--no-worktree",
+                ]
+            )
+            run_dir = root / ".ai" / "runs" / "run-pr-command-001"
+            self.assertEqual(main(["pr-command", "--target", str(root), "--run", "run-pr-command-001"]), 1)
+
+            (run_dir / "connector_execution.json").write_text(json.dumps({"status": "succeeded"}))
+            (run_dir / "validation_gate.json").write_text(json.dumps({"status": "skipped"}))
+            self.assertEqual(main(["pr-gate", "--target", str(root), "--run", "run-pr-command-001"]), 0)
+            self.assertEqual(main(["pr-command", "--target", str(root), "--run", "run-pr-command-001", "--base", "main", "--draft"]), 0)
+
+            command = json.loads((run_dir / "pr_command.json").read_text())
+            self.assertEqual(command["argv"][:3], ["gh", "pr", "create"])
+            self.assertIn("--base", command["argv"])
+            self.assertIn("main", command["argv"])
+            self.assertIn("--head", command["argv"])
+            self.assertIn("ai/issue-123/backend-implementer/run-pr-command-001", command["argv"])
+            self.assertIn("--draft", command["argv"])
+            self.assertEqual(command["title"], "[AI:backend-implementer] Add API")
+            self.assertEqual(command["body_file"], ".ai/runs/run-pr-command-001/pr-body.md")
+
+    def test_run_pr_command_captures_output_and_trace(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_run(root, "run-pr-exec-001")
+            command = {
+                "run_id": "run-pr-exec-001",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    "import sys; print('https://example.test/pull/1'); print('created', file=sys.stderr)",
+                ],
+            }
+            (run_dir / "pr_command.json").write_text(json.dumps(command))
+
+            self.assertEqual(main(["run-pr-command", "--target", str(root), "--run", "run-pr-exec-001", "--timeout", "5"]), 0)
+
+            execution = json.loads((run_dir / "pr_execution.json").read_text())
+            self.assertEqual(execution["status"], "succeeded")
+            self.assertEqual(execution["exit_code"], 0)
+            self.assertIn("https://example.test/pull/1", (run_dir / "pr_stdout.log").read_text())
+            self.assertIn("created", (run_dir / "pr_stderr.log").read_text())
+            trace = (run_dir / "trace.jsonl").read_text()
+            self.assertIn("pr_command_started", trace)
+            self.assertIn("pr_command_finished", trace)
+
     def test_dispatch_run_chains_connector_validation_and_pr_gate(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -445,6 +510,67 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(json.loads((child_dir / "validation_gate.json").read_text())["status"], "skipped")
             self.assertEqual(json.loads((child_dir / "pr_gate.json").read_text())["status"], "passed")
             self.assertTrue((child_dir / "pr-body.md").exists())
+
+    def test_dispatch_run_can_prepare_pr_command_after_gate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            self._install_test_connector(root)
+            self._init_git_repo(root)
+            plan = root / "schedule_plan.json"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T3",
+                                "mode": "writer",
+                                "depends_on": [],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                                "success_criteria": ["Connector succeeds"],
+                            }
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "dispatch-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-dispatch-pr-001",
+                        "--validation-mode",
+                        "skip",
+                        "--timeout",
+                        "5",
+                        "--prepare-pr-command",
+                        "--pr-base",
+                        "main",
+                        "--draft-pr",
+                    ]
+                ),
+                0,
+            )
+
+            schedule_dir = root / ".ai" / "runs" / "run-dispatch-pr-001"
+            child_dir = root / ".ai" / "runs" / "run-dispatch-pr-001-T3-backend-implementer"
+            summary = json.loads((schedule_dir / "dispatch_run.json").read_text())
+            self.assertEqual(summary["children"][0]["pr_command"], ".ai/runs/run-dispatch-pr-001-T3-backend-implementer/pr_command.json")
+            command = json.loads((child_dir / "pr_command.json").read_text())
+            self.assertEqual(command["base"], "main")
+            self.assertTrue(command["draft"])
 
     def test_dispatch_plan_targets_agent_identity_and_uses_private_binding(self):
         with tempfile.TemporaryDirectory() as temp:

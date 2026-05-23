@@ -9,6 +9,7 @@ from .connectors import render_connector_command
 from .dispatch import dispatch_plan
 from .executor import run_connector_command
 from .gates import run_pr_gate, run_validation_gate
+from .pull_requests import render_pr_command
 
 
 class OrchestratorError(Exception):
@@ -25,6 +26,9 @@ def dispatch_run(
     validation_mode: str = "run",
     create_worktree: bool = True,
     base_ref: str = "HEAD",
+    prepare_pr_command: bool = False,
+    pr_base: str = "main",
+    draft_pr: bool = False,
 ) -> dict[str, Any]:
     schedule_dir = dispatch_plan(
         target=target,
@@ -55,12 +59,21 @@ def dispatch_run(
                 mode=validation_mode,
             )
             pr_gate = run_pr_gate(target, child_run_id)
+            pr_command_path = None
+            if prepare_pr_command and pr_gate["status"] == "passed":
+                pr_command_path = render_pr_command(
+                    target=target,
+                    run_id=child_run_id,
+                    base=pr_base,
+                    draft=draft_pr,
+                )
             child.update(
                 {
                     "connector_command": str(command_path.relative_to(target)),
                     "connector_status": execution["status"],
                     "validation_status": validation["status"],
                     "pr_gate_status": pr_gate["status"],
+                    "pr_command": str(pr_command_path.relative_to(target)) if pr_command_path else None,
                     "status": _child_status(execution["status"], validation["status"], pr_gate["status"]),
                 }
             )
@@ -77,6 +90,9 @@ def dispatch_run(
         "timeout_seconds": timeout_seconds,
         "retries": retries,
         "validation_mode": validation_mode,
+        "prepare_pr_command": prepare_pr_command,
+        "pr_base": pr_base,
+        "draft_pr": draft_pr,
         "created_at": _now(),
     }
     (schedule_dir / "dispatch_run.json").write_text(json.dumps(summary, indent=2) + "\n")
@@ -101,4 +117,3 @@ def _child_status(connector_status: str, validation_status: str, pr_gate_status:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
