@@ -114,6 +114,34 @@ class HarnessCliTests(unittest.TestCase):
             )
             self.assertFalse((root / ".ai" / "runs" / "run-worktree-fails").exists())
 
+    def test_create_run_rejects_unsafe_run_id(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            task.write_text(json.dumps({"summary": "Add API"}))
+
+            self.assertEqual(
+                main(
+                    [
+                        "create-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--agent",
+                        "backend-implementer",
+                        "--task",
+                        str(task),
+                        "--run-id",
+                        "../escape",
+                        "--no-worktree",
+                    ]
+                ),
+                1,
+            )
+            self.assertFalse((root / ".ai" / "escape").exists())
+
     def test_pr_body_renders_evidence_bundle(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -305,6 +333,38 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(main(["run-connector", "--target", str(root), "--run", "run-exec-004", "--timeout", "5"]), 0)
             self.assertEqual((run_dir / "stdout.log").read_text().strip(), "workspace")
 
+    def test_run_connector_rejects_mutated_known_connector_command(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            self._install_test_connector(root)
+            task.write_text(json.dumps({"summary": "Add API"}))
+            main(
+                [
+                    "create-run",
+                    "--target",
+                    str(root),
+                    "--issue",
+                    "123",
+                    "--agent",
+                    "backend-implementer",
+                    "--task",
+                    str(task),
+                    "--run-id",
+                    "run-command-policy-001",
+                    "--no-worktree",
+                ]
+            )
+            self.assertEqual(main(["connector-command", "--target", str(root), "--run", "run-command-policy-001"]), 0)
+            run_dir = root / ".ai" / "runs" / "run-command-policy-001"
+            command = json.loads((run_dir / "connector_command.json").read_text())
+            command["argv"] = [sys.executable, "-c", "print('mutated')"]
+            (run_dir / "connector_command.json").write_text(json.dumps(command))
+
+            self.assertEqual(main(["run-connector", "--target", str(root), "--run", "run-command-policy-001", "--timeout", "5"]), 1)
+            self.assertFalse((run_dir / "connector_execution.json").exists())
+
     def test_validation_gate_runs_evidence_commands_and_updates_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -354,6 +414,31 @@ class HarnessCliTests(unittest.TestCase):
 
             gate = json.loads((run_dir / "validation_gate.json").read_text())
             self.assertEqual(gate["results"][0]["stdout"].strip(), "workspace")
+
+    def test_validation_gate_prefers_policy_commands_over_evidence_mutation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_run(root, "run-gate-policy")
+            run = json.loads((run_dir / "run.json").read_text())
+            run["validation_commands"] = [f"{sys.executable} -c \"print('policy command')\""]
+            (run_dir / "run.json").write_text(json.dumps(run))
+            evidence = {
+                "agent": {"agent_id": "backend-implementer"},
+                "issue": {"reference": "#123"},
+                "scope": "Gate policy test",
+                "validation": [
+                    {"command": f"{sys.executable} -c \"print('tampered evidence')\"", "status": "not_run"}
+                ],
+                "risk": "low",
+                "rollback": "revert",
+            }
+            (run_dir / "evidence.json").write_text(json.dumps(evidence))
+
+            self.assertEqual(main(["validation-gate", "--target", str(root), "--run", "run-gate-policy", "--timeout", "5"]), 0)
+
+            gate = json.loads((run_dir / "validation_gate.json").read_text())
+            self.assertIn("policy command", gate["results"][0]["stdout"])
+            self.assertNotIn("tampered evidence", gate["results"][0]["stdout"])
 
     def test_pr_gate_renders_body_and_blocks_failed_validation(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -415,6 +500,7 @@ class HarnessCliTests(unittest.TestCase):
             (run_dir / "connector_execution.json").write_text(json.dumps({"status": "succeeded"}))
             (run_dir / "validation_gate.json").write_text(json.dumps({"status": "skipped"}))
             self.assertEqual(main(["pr-gate", "--target", str(root), "--run", "run-pr-command-001"]), 0)
+            (run_dir / "push_execution.json").write_text(json.dumps({"status": "succeeded"}))
             self.assertEqual(main(["pr-command", "--target", str(root), "--run", "run-pr-command-001", "--base", "main", "--draft"]), 0)
 
             command = json.loads((run_dir / "pr_command.json").read_text())
@@ -426,6 +512,42 @@ class HarnessCliTests(unittest.TestCase):
             self.assertIn("--draft", command["argv"])
             self.assertEqual(command["title"], "[AI:backend-implementer] Add API")
             self.assertEqual(command["body_file"], ".ai/runs/run-pr-command-001/pr-body.md")
+
+    def test_pr_command_requires_successful_push_and_rejects_mutated_argv(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            task.write_text(json.dumps({"summary": "Add API"}))
+            main(
+                [
+                    "create-run",
+                    "--target",
+                    str(root),
+                    "--issue",
+                    "123",
+                    "--agent",
+                    "backend-implementer",
+                    "--task",
+                    str(task),
+                    "--run-id",
+                    "run-pr-command-policy-001",
+                    "--no-worktree",
+                ]
+            )
+            run_dir = root / ".ai" / "runs" / "run-pr-command-policy-001"
+            (run_dir / "connector_execution.json").write_text(json.dumps({"status": "succeeded"}))
+            (run_dir / "validation_gate.json").write_text(json.dumps({"status": "skipped"}))
+            self.assertEqual(main(["pr-gate", "--target", str(root), "--run", "run-pr-command-policy-001"]), 0)
+            self.assertEqual(main(["pr-command", "--target", str(root), "--run", "run-pr-command-policy-001"]), 1)
+
+            (run_dir / "push_execution.json").write_text(json.dumps({"status": "succeeded"}))
+            self.assertEqual(main(["pr-command", "--target", str(root), "--run", "run-pr-command-policy-001"]), 0)
+            command = json.loads((run_dir / "pr_command.json").read_text())
+            command["argv"] = [sys.executable, "-c", "print('mutated pr')"]
+            (run_dir / "pr_command.json").write_text(json.dumps(command))
+            self.assertEqual(main(["run-pr-command", "--target", str(root), "--run", "run-pr-command-policy-001", "--timeout", "5"]), 1)
+            self.assertFalse((run_dir / "pr_execution.json").exists())
 
     def test_run_pr_command_captures_output_and_trace(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -562,6 +684,40 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue(execution["commit_sha"])
             self.assertEqual(json.loads((run_dir / "post_commit_diff_gate.json").read_text())["status"], "clean")
 
+    def test_run_commit_command_rejects_mutated_steps(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            self._init_git_repo(root)
+            task.write_text(json.dumps({"summary": "Add API"}))
+            main(
+                [
+                    "create-run",
+                    "--target",
+                    str(root),
+                    "--issue",
+                    "123",
+                    "--agent",
+                    "backend-implementer",
+                    "--task",
+                    str(task),
+                    "--run-id",
+                    "run-commit-policy-001",
+                ]
+            )
+            run_dir = root / ".ai" / "runs" / "run-commit-policy-001"
+            worktree = root / ".worktrees" / "run-commit-policy-001-backend-implementer"
+            (worktree / "AGENTS.md").write_text((worktree / "AGENTS.md").read_text() + "\nCommit policy change.\n")
+            self.assertEqual(main(["diff-gate", "--target", str(root), "--run", "run-commit-policy-001"]), 0)
+            self.assertEqual(main(["commit-command", "--target", str(root), "--run", "run-commit-policy-001"]), 0)
+            command = json.loads((run_dir / "commit_command.json").read_text())
+            command["steps"][1]["argv"] = ["git", "status"]
+            (run_dir / "commit_command.json").write_text(json.dumps(command))
+
+            self.assertEqual(main(["run-commit-command", "--target", str(root), "--run", "run-commit-policy-001", "--timeout", "5"]), 1)
+            self.assertFalse((run_dir / "commit_execution.json").exists())
+
     def test_push_command_requires_successful_commit_and_captures_failure(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -588,6 +744,30 @@ class HarnessCliTests(unittest.TestCase):
             execution = json.loads((run_dir / "push_execution.json").read_text())
             self.assertEqual(execution["status"], "failed")
             self.assertNotEqual(execution["exit_code"], 0)
+
+    def test_run_push_command_rejects_mutated_argv(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_run(root, "run-push-policy-001")
+            run = json.loads((run_dir / "run.json").read_text())
+            run.update(
+                {
+                    "mode": "writer",
+                    "branch": "ai/issue-123/backend-implementer/run-push-policy-001",
+                    "worktree": "workspace",
+                    "task_summary": "Add API",
+                }
+            )
+            (run_dir / "run.json").write_text(json.dumps(run))
+            (root / "workspace").mkdir()
+            (run_dir / "commit_execution.json").write_text(json.dumps({"status": "succeeded", "commit_sha": "abc123"}))
+            self.assertEqual(main(["push-command", "--target", str(root), "--run", "run-push-policy-001"]), 0)
+            command = json.loads((run_dir / "push_command.json").read_text())
+            command["argv"] = [sys.executable, "-c", "print('mutated push')"]
+            (run_dir / "push_command.json").write_text(json.dumps(command))
+
+            self.assertEqual(main(["run-push-command", "--target", str(root), "--run", "run-push-policy-001", "--timeout", "5"]), 1)
+            self.assertFalse((run_dir / "push_execution.json").exists())
 
     def test_dispatch_run_chains_connector_validation_and_pr_gate(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -648,7 +828,7 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(json.loads((child_dir / "pr_gate.json").read_text())["status"], "passed")
             self.assertTrue((child_dir / "pr-body.md").exists())
 
-    def test_dispatch_run_can_prepare_pr_command_after_gate(self):
+    def test_dispatch_run_requires_push_before_preparing_pr_command(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             main(["init", "--target", str(root)])
@@ -698,16 +878,83 @@ class HarnessCliTests(unittest.TestCase):
                         "--draft-pr",
                     ]
                 ),
-                0,
+                1,
             )
 
             schedule_dir = root / ".ai" / "runs" / "run-dispatch-pr-001"
             child_dir = root / ".ai" / "runs" / "run-dispatch-pr-001-T3-backend-implementer"
             summary = json.loads((schedule_dir / "dispatch_run.json").read_text())
-            self.assertEqual(summary["children"][0]["pr_command"], ".ai/runs/run-dispatch-pr-001-T3-backend-implementer/pr_command.json")
-            command = json.loads((child_dir / "pr_command.json").read_text())
-            self.assertEqual(command["base"], "main")
-            self.assertTrue(command["draft"])
+            self.assertEqual(summary["status"], "failed")
+            self.assertEqual(summary["children"][0]["status"], "failed")
+            self.assertIn("push execution is missing", summary["children"][0]["error"])
+            self.assertFalse((child_dir / "pr_command.json").exists())
+
+    def test_dispatch_run_blocks_dependents_when_dependency_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            self._install_failing_test_connector(root)
+            self._init_git_repo(root)
+            plan = root / "schedule_plan.json"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T1",
+                                "mode": "writer",
+                                "depends_on": [],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                                "success_criteria": ["Fails intentionally"],
+                            },
+                            {
+                                "agent_id": "frontend-implementer",
+                                "task_id": "T2",
+                                "mode": "writer",
+                                "depends_on": ["T1"],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                                "success_criteria": ["Must not run"],
+                            },
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "dispatch-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-dispatch-deps-001",
+                        "--validation-mode",
+                        "skip",
+                        "--timeout",
+                        "5",
+                    ]
+                ),
+                1,
+            )
+
+            schedule_dir = root / ".ai" / "runs" / "run-dispatch-deps-001"
+            summary = json.loads((schedule_dir / "dispatch_run.json").read_text())
+            self.assertEqual(summary["status"], "failed")
+            self.assertEqual(summary["children"][0]["status"], "failed")
+            self.assertEqual(summary["children"][1]["status"], "blocked")
+            blocked_dir = root / ".ai" / "runs" / "run-dispatch-deps-001-T2-frontend-implementer"
+            self.assertFalse((blocked_dir / "connector_command.json").exists())
 
     def test_dispatch_run_can_commit_push_then_prepare_pr_command(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -780,6 +1027,136 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue((child_dir / "pr_command.json").exists())
             self.assertEqual(self._remote_branch_sha(remote, "ai/issue-123/backend-implementer/" + child_run_id), child["commit_sha"])
 
+    def test_dispatch_plan_rejects_unknown_dependency_and_cycles(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            unknown = root / "unknown_dep.json"
+            unknown.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T2",
+                                "mode": "writer",
+                                "depends_on": ["T1"],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                            }
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+            self.assertEqual(
+                main(["dispatch-plan", "--target", str(root), "--issue", "123", "--plan", str(unknown), "--run-id", "run-schedule-unknown", "--no-worktree"]),
+                1,
+            )
+
+            cycle = root / "cycle_dep.json"
+            cycle.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T1",
+                                "mode": "writer",
+                                "depends_on": ["T2"],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                            },
+                            {
+                                "agent_id": "frontend-implementer",
+                                "task_id": "T2",
+                                "mode": "writer",
+                                "depends_on": ["T1"],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                            },
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+            self.assertEqual(
+                main(["dispatch-plan", "--target", str(root), "--issue", "123", "--plan", str(cycle), "--run-id", "run-schedule-cycle", "--no-worktree"]),
+                1,
+            )
+
+    def test_dispatch_plan_rejects_unsafe_schedule_run_id(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plan = root / "schedule_plan.json"
+            main(["init", "--target", str(root)])
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+            self.assertEqual(
+                main(["dispatch-plan", "--target", str(root), "--issue", "123", "--plan", str(plan), "--run-id", "../escape", "--no-worktree"]),
+                1,
+            )
+            self.assertFalse((root / ".ai" / "escape").exists())
+
+    def test_dispatch_plan_failure_removes_created_worktrees_and_branches(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plan = root / "schedule_plan.json"
+            main(["init", "--target", str(root)])
+            self._init_git_repo(root)
+            second_branch = "ai/issue-123/backend-implementer/run-schedule-leak-T2-backend-implementer"
+            self._create_branch(root, second_branch)
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T1",
+                                "mode": "writer",
+                                "depends_on": [],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                            },
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T2",
+                                "mode": "writer",
+                                "depends_on": [],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                            },
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(["dispatch-plan", "--target", str(root), "--issue", "123", "--plan", str(plan), "--run-id", "run-schedule-leak"]),
+                1,
+            )
+
+            first_branch = "ai/issue-123/backend-implementer/run-schedule-leak-T1-backend-implementer"
+            self.assertFalse((root / ".worktrees" / "run-schedule-leak-T1-backend-implementer-backend-implementer").exists())
+            self.assertFalse(self._branch_exists(root, first_branch))
+            self.assertTrue(self._branch_exists(root, second_branch))
+
     def test_dispatch_plan_targets_agent_identity_and_uses_private_binding(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -793,7 +1170,7 @@ class HarnessCliTests(unittest.TestCase):
                                 "agent_id": "backend-implementer",
                                 "task_id": "T3",
                                 "mode": "writer",
-                                "depends_on": ["T1", "T2"],
+                                "depends_on": [],
                                 "expected_output": "branch_pr",
                                 "requires_pr": True,
                                 "risk_level": "medium",
@@ -923,6 +1300,37 @@ class HarnessCliTests(unittest.TestCase):
         )
         assignments.write_text(text)
 
+    def _install_failing_test_connector(self, root: Path) -> None:
+        connector = root / ".ai" / "connectors" / "test-cli.yml"
+        connector.write_text(
+            "\n".join(
+                [
+                    "id: test-cli",
+                    "version: 1",
+                    f"executable: {sys.executable}",
+                    "profiles:",
+                    "  test-profile:",
+                    "    mode: test",
+                    "command_templates:",
+                    f"  test-profile: {sys.executable} -c \"raise SystemExit(7)\"",
+                    "",
+                ]
+            )
+        )
+        assignments = root / ".ai" / "private" / "assignments.yml"
+        text = assignments.read_text()
+        text = text.replace("connector: codex-cli", "connector: test-cli")
+        text = text.replace("connector: claude-code-cli", "connector: test-cli")
+        text = text.replace("profile: writer-workspace", "profile: test-profile")
+        text = text.replace("profile: reviewer-readonly", "profile: test-profile")
+        text = text.replace("profile: scheduler-readonly", "profile: test-profile")
+        text = text.replace("profile: readonly-json", "profile: test-profile")
+        text = text.replace("profile: planner", "profile: test-profile")
+        text = text.replace("profile: qa-workspace", "profile: test-profile")
+        text = text.replace("profile: skill-writer", "profile: test-profile")
+        text = text.replace("profile: release-readonly", "profile: test-profile")
+        assignments.write_text(text)
+
     def _init_git_repo(self, root: Path) -> None:
         import subprocess
 
@@ -941,6 +1349,17 @@ class HarnessCliTests(unittest.TestCase):
 
         subprocess.run(["git", "init", "--bare", str(remote)], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def _create_branch(self, root: Path, branch: str) -> None:
+        import subprocess
+
+        subprocess.run(["git", "branch", branch], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def _branch_exists(self, root: Path, branch: str) -> bool:
+        import subprocess
+
+        result = subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=root)
+        return result.returncode == 0
 
     def _remote_branch_sha(self, remote: Path, branch: str) -> str:
         import subprocess

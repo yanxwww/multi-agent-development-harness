@@ -36,42 +36,16 @@ def render_pr_command(
         raise PullRequestError(f"PR gate is {gate.get('status', 'missing')}")
     if not body_path.exists():
         raise PullRequestError(f"PR body is missing for {run_id}")
+    push_execution = _load_optional_json(run_dir / "push_execution.json")
+    if push_execution.get("status") != "succeeded":
+        raise PullRequestError(f"push execution is {push_execution.get('status', 'missing')}")
 
     head = run.get("branch")
     if not isinstance(head, str) or not head:
         raise PullRequestError(f"run branch is missing for {run_id}")
 
-    title = f"[AI:{run.get('agent_id')}] {run.get('task_summary', run_id)}"
-    body_file = f".ai/runs/{run_id}/pr-body.md"
-    argv = [
-        executable,
-        "pr",
-        "create",
-        "--base",
-        base,
-        "--head",
-        head,
-        "--title",
-        title,
-        "--body-file",
-        body_file,
-    ]
-    if draft:
-        argv.append("--draft")
-
-    command = {
-        "run_id": run_id,
-        "agent_id": run.get("agent_id"),
-        "executable": executable,
-        "base": base,
-        "head": head,
-        "title": title,
-        "body_file": body_file,
-        "draft": draft,
-        "argv": argv,
-        "display": shlex.join(argv),
-        "created_at": _now(),
-    }
+    command = _expected_pr_command(run_id=run_id, run=run, base=base, draft=draft, executable=executable)
+    command["created_at"] = _now()
     output_path = run_dir / "pr_command.json"
     output_path.write_text(json.dumps(command, indent=2) + "\n")
     _append_trace(run_dir, {"event": "pr_command_rendered", "run_id": run_id, "base": base, "head": head})
@@ -88,6 +62,26 @@ def run_pr_command(target: Path, run_id: str, timeout_seconds: float) -> dict[st
         raise PullRequestError(f"PR command is missing for {run_id}")
 
     command = json.loads(command_path.read_text())
+    run_path = run_dir / "run.json"
+    if run_path.exists():
+        run = json.loads(run_path.read_text())
+        if run.get("mode") == "writer":
+            push_execution = _load_optional_json(run_dir / "push_execution.json")
+            if push_execution.get("status") != "succeeded":
+                raise PullRequestError(f"push execution is {push_execution.get('status', 'missing')}")
+            expected = _expected_pr_command(
+                run_id=run_id,
+                run=run,
+                base=_string_field(command, "base", "main"),
+                draft=bool(command.get("draft", False)),
+                executable=_string_field(command, "executable", "gh"),
+            )
+            _validate_command_fields(
+                command,
+                expected,
+                ["run_id", "agent_id", "executable", "base", "head", "title", "body_file", "draft", "argv", "display"],
+                "PR command does not match rendered PR policy",
+            )
     argv = command.get("argv")
     if not isinstance(argv, list) or not argv or not all(isinstance(item, str) for item in argv):
         raise PullRequestError("PR command argv must be a non-empty string list")
@@ -126,6 +120,71 @@ def run_pr_command(target: Path, run_id: str, timeout_seconds: float) -> dict[st
         },
     )
     return execution
+
+
+def _expected_pr_command(
+    run_id: str,
+    run: dict[str, Any],
+    base: str,
+    draft: bool,
+    executable: str,
+) -> dict[str, Any]:
+    head = run.get("branch")
+    if not isinstance(head, str) or not head:
+        raise PullRequestError(f"run branch is missing for {run_id}")
+    title = f"[AI:{run.get('agent_id')}] {run.get('task_summary', run_id)}"
+    body_file = f".ai/runs/{run_id}/pr-body.md"
+    argv = [
+        executable,
+        "pr",
+        "create",
+        "--base",
+        base,
+        "--head",
+        head,
+        "--title",
+        title,
+        "--body-file",
+        body_file,
+    ]
+    if draft:
+        argv.append("--draft")
+    return {
+        "run_id": run_id,
+        "agent_id": run.get("agent_id"),
+        "executable": executable,
+        "base": base,
+        "head": head,
+        "title": title,
+        "body_file": body_file,
+        "draft": draft,
+        "argv": argv,
+        "display": shlex.join(argv),
+    }
+
+
+def _validate_command_fields(
+    command: dict[str, Any],
+    expected: dict[str, Any],
+    keys: list[str],
+    error: str,
+) -> None:
+    for key in keys:
+        if command.get(key) != expected.get(key):
+            raise PullRequestError(f"{error}: {key}")
+
+
+def _string_field(command: dict[str, Any], key: str, default: str) -> str:
+    value = command.get(key, default)
+    if not isinstance(value, str) or not value:
+        raise PullRequestError(f"PR command {key} must be a non-empty string")
+    return value
+
+
+def _load_optional_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
 
 
 def _run_attempt(argv: list[str], cwd: Path, timeout_seconds: float) -> dict[str, Any]:

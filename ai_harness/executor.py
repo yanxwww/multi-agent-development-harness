@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .connectors import ConnectorError, has_connector_command_policy, validate_connector_command_artifact
+
 
 class ExecutionError(Exception):
     pass
@@ -28,6 +30,11 @@ def run_connector_command(
         raise ExecutionError(f"connector command is missing for {run_id}")
 
     command = json.loads(command_path.read_text())
+    if has_connector_command_policy(target, run_id):
+        try:
+            validate_connector_command_artifact(target, run_id, command)
+        except ConnectorError as exc:
+            raise ExecutionError(str(exc)) from exc
     argv = command.get("argv")
     if not isinstance(argv, list) or not argv or not all(isinstance(item, str) for item in argv):
         raise ExecutionError("connector command argv must be a non-empty string list")

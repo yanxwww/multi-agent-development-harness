@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .runs import create_run, normalize_issue_id
+from .runs import cleanup_run_workspace, create_run, normalize_issue_id, validate_run_id
 from .validation import load_agent_catalog, load_private_bindings, validate_scaffold
 
 
@@ -49,11 +49,13 @@ def dispatch_plan(
     base_ref: str = "HEAD",
 ) -> Path:
     validate_scaffold(target)
+    validate_run_id(run_id)
     if not plan_path.exists():
         raise DispatchError(f"schedule plan does not exist: {plan_path}")
 
     plan = json.loads(plan_path.read_text())
     _validate_schedule_plan(plan)
+    _validate_dependency_graph(plan["run_plan"])
     catalog = load_agent_catalog(target).get("agents", {})
     bindings = load_private_bindings(target).get("bindings", {})
     for item in plan["run_plan"]:
@@ -66,6 +68,10 @@ def dispatch_plan(
         _validate_mode_policy(item, catalog_entry)
 
     child_run_ids = [_child_run_id(run_id, item["task_id"], item["agent_id"]) for item in plan["run_plan"]]
+    if len(set(child_run_ids)) != len(child_run_ids):
+        raise DispatchError("schedule plan produces duplicate child run ids")
+    for child_run_id in child_run_ids:
+        validate_run_id(child_run_id)
     schedule_dir = target / ".ai" / "runs" / run_id
     if schedule_dir.exists():
         raise DispatchError(f"schedule run already exists: {run_id}")
@@ -119,6 +125,7 @@ def dispatch_plan(
                             "task_id": item["task_id"],
                             "agent_id": agent_id,
                             "mode": item["mode"],
+                            "depends_on": item.get("depends_on", []),
                             "connector": binding["connector"],
                             "connector_profile": binding["profile"],
                             "requires_pr": item["requires_pr"],
@@ -131,6 +138,9 @@ def dispatch_plan(
         for child_run_id in created_child_run_ids:
             child_run_dir = target / ".ai" / "runs" / child_run_id
             if child_run_dir.exists():
+                run_path = child_run_dir / "run.json"
+                if run_path.exists():
+                    cleanup_run_workspace(target, json.loads(run_path.read_text()))
                 shutil.rmtree(child_run_dir)
         if schedule_dir.exists():
             shutil.rmtree(schedule_dir)
@@ -176,6 +186,9 @@ def _validate_plan_item(index: int, item: Any) -> None:
     for key in required:
         if key not in item:
             raise DispatchError(f"run_plan[{index}] missing required key: {key}")
+    for key in ["agent_id", "task_id", "mode", "expected_output", "risk_level"]:
+        if not isinstance(item[key], str) or not item[key].strip():
+            raise DispatchError(f"run_plan[{index}].{key} must be a non-empty string")
     if item["mode"] not in MODES:
         raise DispatchError(f"run_plan[{index}] has invalid mode: {item['mode']}")
     if item["expected_output"] not in EXPECTED_OUTPUTS:
@@ -184,6 +197,9 @@ def _validate_plan_item(index: int, item: Any) -> None:
         raise DispatchError(f"run_plan[{index}] has invalid risk_level: {item['risk_level']}")
     if not isinstance(item["depends_on"], list):
         raise DispatchError(f"run_plan[{index}] depends_on must be a list")
+    for dependency_index, dependency in enumerate(item["depends_on"]):
+        if not isinstance(dependency, str) or not dependency.strip():
+            raise DispatchError(f"run_plan[{index}].depends_on[{dependency_index}] must be a non-empty string")
     if not isinstance(item["requires_pr"], bool):
         raise DispatchError(f"run_plan[{index}] requires_pr must be a boolean")
     if "success_criteria" in item and not isinstance(item["success_criteria"], list):
@@ -226,6 +242,41 @@ def _validate_mode_policy(item: dict[str, Any], catalog_entry: dict[str, Any]) -
         raise DispatchError(f"writer dispatch must require a PR: {item['agent_id']} {item['task_id']}")
     if item["mode"] == "read_only" and item["requires_pr"]:
         raise DispatchError(f"read-only dispatch must not require a PR: {item['agent_id']} {item['task_id']}")
+
+
+def _validate_dependency_graph(items: list[dict[str, Any]]) -> None:
+    task_ids: set[str] = set()
+    for index, item in enumerate(items):
+        task_id = item["task_id"]
+        if task_id in task_ids:
+            raise DispatchError(f"duplicate task_id in schedule plan: {task_id}")
+        task_ids.add(task_id)
+
+    graph: dict[str, list[str]] = {}
+    for item in items:
+        task_id = item["task_id"]
+        dependencies = item.get("depends_on", [])
+        unknown = sorted(set(dependencies) - task_ids)
+        if unknown:
+            raise DispatchError(f"task {task_id} depends on unknown task ids: {unknown}")
+        graph[task_id] = list(dependencies)
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(task_id: str) -> None:
+        if task_id in visited:
+            return
+        if task_id in visiting:
+            raise DispatchError(f"schedule plan dependency cycle includes task: {task_id}")
+        visiting.add(task_id)
+        for dependency in graph[task_id]:
+            visit(dependency)
+        visiting.remove(task_id)
+        visited.add(task_id)
+
+    for task_id in graph:
+        visit(task_id)
 
 
 def _child_run_id(schedule_run_id: str, task_id: str, agent_id: str) -> str:

@@ -17,6 +17,18 @@ def render_connector_command(
     run_id: str,
     output_schema: str = ".ai/schemas/agent_result.schema.json",
 ) -> Path:
+    command = build_connector_command(target, run_id, output_schema=output_schema)
+    run_dir = target / ".ai" / "runs" / run_id
+    output_path = run_dir / "connector_command.json"
+    output_path.write_text(json.dumps(command, indent=2) + "\n")
+    return output_path
+
+
+def build_connector_command(
+    target: Path,
+    run_id: str,
+    output_schema: str = ".ai/schemas/agent_result.schema.json",
+) -> dict[str, Any]:
     validate_scaffold(target)
     run_dir = target / ".ai" / "runs" / run_id
     run_path = run_dir / "run.json"
@@ -55,9 +67,40 @@ def render_connector_command(
         "display": display,
         "argv": shlex.split(display),
     }
-    output_path = run_dir / "connector_command.json"
-    output_path.write_text(json.dumps(command, indent=2) + "\n")
-    return output_path
+    return command
+
+
+def validate_connector_command_artifact(target: Path, run_id: str, command: dict[str, Any]) -> None:
+    output_schema = command.get("output_schema", ".ai/schemas/agent_result.schema.json")
+    if not isinstance(output_schema, str) or not output_schema:
+        raise ConnectorError("connector command output_schema must be a non-empty string")
+    expected = build_connector_command(target, run_id, output_schema=output_schema)
+    checked_keys = [
+        "run_id",
+        "agent_id",
+        "connector",
+        "profile",
+        "executable",
+        "workspace",
+        "output_schema",
+        "display",
+        "argv",
+    ]
+    for key in checked_keys:
+        if command.get(key) != expected.get(key):
+            raise ConnectorError(f"connector command does not match rendered connector policy: {key}")
+
+
+def has_connector_command_policy(target: Path, run_id: str) -> bool:
+    run_path = target / ".ai" / "runs" / run_id / "run.json"
+    if not run_path.exists():
+        return False
+    run = json.loads(run_path.read_text())
+    connector = load_connectors(target).get(str(run.get("connector")))
+    if not isinstance(connector, dict):
+        return False
+    templates = connector.get("command_templates", {})
+    return isinstance(templates, dict) and str(run.get("connector_profile")) in templates
 
 
 def _render_template(template: str, values: dict[str, str]) -> str:

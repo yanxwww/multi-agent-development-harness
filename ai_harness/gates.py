@@ -29,7 +29,7 @@ def run_validation_gate(
     if not evidence_path.exists():
         raise GateError(f"evidence is missing for {run_id}")
     evidence = json.loads(evidence_path.read_text())
-    validation = evidence.get("validation", [])
+    validation = _validation_items(run_dir, evidence)
     if not isinstance(validation, list):
         raise GateError("evidence validation must be a list")
 
@@ -149,6 +149,19 @@ def _run_validation_command(cwd: Path, item: dict[str, Any], timeout_seconds: fl
             "stdout": _decode_timeout_output(exc.stdout),
             "stderr": _decode_timeout_output(exc.stderr),
         }
+
+
+def _validation_items(run_dir: Path, evidence: dict[str, Any]) -> list[Any]:
+    run_path = run_dir / "run.json"
+    if not run_path.exists():
+        return evidence.get("validation", [])
+    run = json.loads(run_path.read_text())
+    commands = run.get("validation_commands")
+    if not commands:
+        return evidence.get("validation", [])
+    if not isinstance(commands, list) or not all(isinstance(command, str) for command in commands):
+        raise GateError("run validation_commands must be a list of strings")
+    return [{"command": command, "status": "not_run"} for command in commands]
 
 
 def _validation_cwd(target: Path, run_dir: Path) -> Path:

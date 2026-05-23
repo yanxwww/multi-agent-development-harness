@@ -21,6 +21,16 @@ class RunError(Exception):
     pass
 
 
+RUN_ID_RE = re.compile(r"^run-[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def validate_run_id(run_id: str) -> None:
+    if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
+        raise RunError(
+            "run_id must match ^run-[A-Za-z0-9][A-Za-z0-9._-]*$ and must not contain path separators"
+        )
+
+
 def create_run(
     target: Path,
     issue: str,
@@ -57,6 +67,7 @@ def create_run(
         raise RunError(f"agent cannot run in writer mode: {agent_id}")
 
     run_id = run_id or _new_run_id()
+    validate_run_id(run_id)
     issue_id = normalize_issue_id(issue)
     branch = ""
     worktree = ""
@@ -91,6 +102,7 @@ def create_run(
         "state": state,
         "task_id": task.get("task_id", ""),
         "task_summary": task["summary"],
+        "validation_commands": [item["command"] for item in _validation_placeholders(agent_id, mode)],
         "created_at": _now(),
         "agent_doc": f".ai/agents/{agent_id}.md",
         "agent_doc_hash": f"sha256:{agent_hash}",
@@ -110,7 +122,7 @@ def create_run(
             "reference": run["issue_reference"],
         },
         "scope": task["summary"],
-        "validation": _validation_placeholders(agent_id, mode),
+        "validation": [{"command": command, "status": "not_run"} for command in run["validation_commands"]],
         "risk": "Not assessed yet.",
         "rollback": "Revert this PR.",
         "unresolved_questions": [],
@@ -139,8 +151,23 @@ def create_run(
             shutil.rmtree(run_dir)
         if worktree_created and worktree_path is not None and worktree_path.exists():
             _remove_git_worktree(target, worktree_path)
+        if worktree_created and branch:
+            _delete_git_branch(target, branch)
         raise
     return run
+
+
+def cleanup_run_workspace(target: Path, run: dict[str, Any]) -> None:
+    if not run.get("worktree_created"):
+        return
+    worktree = run.get("worktree")
+    if isinstance(worktree, str) and worktree:
+        worktree_path = target / worktree
+        if worktree_path.exists():
+            _remove_git_worktree(target, worktree_path)
+    branch = run.get("branch")
+    if isinstance(branch, str) and branch:
+        _delete_git_branch(target, branch)
 
 
 def render_pr_body(target: Path, run_id: str) -> Path:
@@ -283,3 +310,12 @@ def _remove_git_worktree(target: Path, worktree: Path) -> None:
     )
     if result.returncode != 0 and worktree.exists():
         shutil.rmtree(worktree)
+
+
+def _delete_git_branch(target: Path, branch: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(target), "branch", "-D", branch],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )

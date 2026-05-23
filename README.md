@@ -60,24 +60,26 @@ The deterministic dispatcher validates the plan, resolves `agent_id -> connector
 
 `connector-command` renders the CLI command that a future process supervisor will execute. It writes `.ai/runs/<run-id>/connector_command.json` with `argv`, display text, connector id, connector profile, workspace, and output schema. It does not execute Codex or Claude Code.
 
-`run-connector` executes `connector_command.json` with a per-attempt timeout and retry count. It writes `stdout.log`, `stderr.log`, per-attempt logs, `connector_events.jsonl` for JSON stdout lines, `connector_execution.json`, and trace events in `trace.jsonl`.
+`run-connector` executes `connector_command.json` with a per-attempt timeout and retry count. For configured connector profiles, it re-derives the expected command from run metadata before execution and rejects mutated command artifacts. It writes `stdout.log`, `stderr.log`, per-attempt logs, `connector_events.jsonl` for JSON stdout lines, `connector_execution.json`, and trace events in `trace.jsonl`.
 
-`validation-gate` runs or explicitly skips the validation commands in `evidence.json`, writes `validation_gate.json`, updates validation status in the evidence bundle, and appends trace events.
+`validation-gate` runs or explicitly skips the validation commands declared in run metadata, falling back to `evidence.json` for manual runs. This prevents a mutable evidence bundle from becoming execution authority. It writes `validation_gate.json`, updates validation status in the evidence bundle, and appends trace events.
 
 `pr-gate` renders `pr-body.md` for writer runs and blocks the run unless evidence, connector execution, validation status, and PR body requirements are satisfied.
 
 `diff-gate` checks the writer worktree for changed files, writes `diff_gate.json`, and stores `diff.patch` for review evidence.
 
-`commit-command` renders deterministic git add/commit steps into `commit_command.json`. `run-commit-command` executes those steps in the run worktree, writes `commit_execution.json`, captures logs, records the commit SHA, and verifies the post-commit worktree is clean.
+`commit-command` renders deterministic git add/commit steps into `commit_command.json`. `run-commit-command` re-derives the expected git steps before execution, rejects mutated artifacts, executes those steps in the run worktree, writes `commit_execution.json`, captures logs, records the commit SHA, and verifies the post-commit worktree is clean.
 
-`push-command` renders deterministic `git push <remote> <branch>` into `push_command.json`. `run-push-command` executes it in the run worktree and records `push_execution.json` plus stdout/stderr logs.
+`push-command` renders deterministic `git push <remote> <branch>` into `push_command.json`. `run-push-command` re-derives the expected push command before execution, rejects mutated artifacts, executes it in the run worktree, and records `push_execution.json` plus stdout/stderr logs.
 
-`pr-command` renders a gated `gh pr create` command into `.ai/runs/<run-id>/pr_command.json`. It only runs after `pr_gate.json` has status `passed`.
+`pr-command` renders a gated `gh pr create` command into `.ai/runs/<run-id>/pr_command.json`. It only runs after `pr_gate.json` has status `passed` and `push_execution.json` has status `succeeded`.
 
-`run-pr-command` executes `pr_command.json` and records `pr_stdout.log`, `pr_stderr.log`, `pr_execution.json`, and trace events. It depends on the local GitHub CLI environment being authenticated and the target branch being publishable.
+`run-pr-command` re-derives the expected PR command before execution for writer runs, rejects mutated artifacts, executes `pr_command.json`, and records `pr_stdout.log`, `pr_stderr.log`, `pr_execution.json`, and trace events. It depends on the local GitHub CLI environment being authenticated and the target branch being publishable.
 
-`dispatch-run` is the deterministic orchestration path. It calls `dispatch-plan`, renders each child run's `connector_command.json`, executes the connector with timeout/retry trace capture, runs the validation gate, then runs the PR body/gate check. With `--commit-and-push`, gated writer children run `diff-gate -> commit-command -> run-commit-command -> push-command -> run-push-command`. With `--prepare-pr-command`, pushed writer children also get a deterministic PR command artifact. The scheduler still targets only `agent_id`; connector selection remains private to the dispatcher.
+`dispatch-plan` rejects unsafe run ids, duplicate tasks, unknown dependencies, and dependency cycles before creating child runs. If child worktree creation fails mid-plan, the dispatcher removes already-created child run directories, worktrees, and local branches it owns.
+
+`dispatch-run` is the deterministic orchestration path. It calls `dispatch-plan`, executes child runs only after dependencies have succeeded, renders each child run's `connector_command.json`, executes the connector with timeout/retry trace capture, runs the validation gate, then runs the PR body/gate check. Downstream child tasks are marked `blocked` if a prerequisite fails. With `--commit-and-push`, gated writer children run `diff-gate -> commit-command -> run-commit-command -> push-command -> run-push-command`. With `--prepare-pr-command`, pushed writer children also get a deterministic PR command artifact. The scheduler still targets only `agent_id`; connector selection remains private to the dispatcher.
 
 ## Current MVP Boundaries
 
-This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, renders deterministic connector/git/PR commands, executes those commands with captured logs and trace, and gates writer runs through validation, PR body, diff, commit, and push checks. It does not yet run CI, install skills into external runtimes, enforce branch locks, or merge pull requests. Those belong in the next orchestration layer.
+This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, renders deterministic connector/git/PR commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation, PR body, diff, commit, push, and PR command checks. It does not yet run CI, install skills into external runtimes, enforce branch locks, or merge pull requests. Those belong in the next orchestration layer.

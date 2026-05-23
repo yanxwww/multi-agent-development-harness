@@ -10,6 +10,18 @@
 
 ---
 
+### Post-MVP Hardening Added
+
+- [x] Enforce safe `run-*` ids before using ids in filesystem paths, worktree paths, or branch templates.
+- [x] Validate SchedulePlan dependencies, including duplicate task ids, unknown dependencies, and cycles.
+- [x] Clean up owned child run directories, worktrees, and local branches when `dispatch-plan` fails partway through worktree creation.
+- [x] Re-derive managed connector, commit, push, and PR command artifacts before subprocess execution so mutable JSON artifacts cannot change execution authority.
+- [x] Source managed validation commands from run metadata, not mutable evidence JSON.
+- [x] Require successful branch push before rendering or executing PR creation commands.
+- [x] Block dependent child runs in `dispatch-run` when prerequisites fail.
+
+---
+
 ### Task 1: Runtime-Blind Scaffold Tests
 
 **Files:**

@@ -24,8 +24,8 @@ The CLI provides:
 - `harness create-run` to allocate a run id, branch name, worktree path, private connector binding, trace skeleton, and evidence bundle for one agent identity.
 - `harness dispatch-plan` to validate a runtime-blind SchedulePlan and prepare deterministic AgentRun records through private connector bindings.
 - `harness connector-command` to render the Codex CLI or Claude Code CLI command for a prepared AgentRun without executing it.
-- `harness run-connector` to execute a rendered connector command with stdout/stderr capture, JSON event extraction, timeout, retry, and exit trace.
-- `harness validation-gate` to run or explicitly skip evidence validation commands and write validation gate artifacts.
+- `harness run-connector` to re-derive and execute a rendered connector command with stdout/stderr capture, JSON event extraction, timeout, retry, and exit trace.
+- `harness validation-gate` to run or explicitly skip policy validation commands and write validation gate artifacts.
 - `harness pr-gate` to render a PR body for writer runs and block runs missing connector, validation, evidence, or PR body requirements.
 - `harness dispatch-run` to chain `dispatch-plan -> connector-command -> run-connector -> validation-gate -> pr-gate` deterministically, with optional commit/push and PR command preparation.
 - `harness pr-body` to render a PR body from run evidence.
@@ -114,7 +114,9 @@ The scheduler sees only agent identities and produces a `SchedulePlan`:
 
 The dispatcher sees `.ai/private/assignments.yml` and resolves `backend-implementer -> codex-cli / writer-workspace`. Connector, model, credentials, and CLI flags are not part of scheduler output.
 
-`dispatch-run` keeps this boundary intact. It first prepares child AgentRun records from the scheduler-visible plan, then the dispatcher privately renders and executes each connector command, records connector execution, runs validation, and evaluates PR readiness. When `--commit-and-push` is enabled, it runs the deterministic publication chain for gated writer runs. When `--prepare-pr-command` is enabled, it also renders PR creation commands after the writer branch has passed the enabled publication gates.
+`dispatch-plan` validates the task dependency graph before creating child runs. Unknown dependencies, duplicate task ids, and cycles are rejected. Schedule and child run ids must match the safe run id grammar, so plan input cannot escape `.ai/runs`, `.worktrees`, or branch templates.
+
+`dispatch-run` keeps this boundary intact. It first prepares child AgentRun records from the scheduler-visible plan, then the dispatcher privately renders and executes each connector command, records connector execution, runs validation, and evaluates PR readiness. Child runs are released only after their declared dependencies have succeeded; dependents are marked `blocked` if a prerequisite fails. When `--commit-and-push` is enabled, it runs the deterministic publication chain for gated writer runs. When `--prepare-pr-command` is enabled, it also renders PR creation commands after the writer branch has passed the enabled publication gates.
 
 ## Run Model
 
@@ -154,7 +156,7 @@ Every AI PR body includes:
 - rollback plan
 - unresolved questions
 
-After the PR gate passes, `harness pr-command` can produce a deterministic `gh pr create` command artifact. `harness run-pr-command` can execute that artifact if the local GitHub CLI is authenticated and the branch is ready for publication. The command artifact is separate from gate evaluation so audit and execution can be split.
+After the PR gate passes and the branch push has succeeded, `harness pr-command` can produce a deterministic `gh pr create` command artifact. `harness run-pr-command` can execute that artifact if the local GitHub CLI is authenticated. The command artifact is separate from gate evaluation so audit and execution can be split.
 
 The deterministic writer publication chain is:
 
@@ -193,6 +195,7 @@ Future orchestrators can enforce the same state transitions.
 
 `harness validation-gate` checks run-level validation evidence:
 
+- validation commands come from run metadata for managed runs, with evidence-only fallback for manual runs
 - every validation command has a pass/fail/skipped status
 - command stdout, stderr, exit code, and timeout status are recorded
 - `evidence.json` and `validation_gate.json` stay in sync
@@ -208,8 +211,16 @@ Future orchestrators can enforce the same state transitions.
 
 - run is a writer run
 - `pr_gate.json` status is `passed`
+- `push_execution.json` status is `succeeded`
 - PR body exists
 - branch name is present
+
+Command execution hardening:
+
+- managed `connector_command.json` artifacts are re-derived from run metadata and connector profile before execution
+- managed `commit_command.json`, `push_command.json`, and `pr_command.json` artifacts are re-derived from run metadata before execution
+- mutated argv, display strings, git steps, worktree, branch, or PR head values are rejected before subprocess execution
+- failed dispatch-plan cleanup removes child run metadata, owned worktrees, and owned branches created before the failure
 
 `harness diff-gate` checks commit readiness:
 

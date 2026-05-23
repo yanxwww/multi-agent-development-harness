@@ -53,33 +53,14 @@ def render_commit_command(
         raise GitPublishError(f"diff gate is {gate.get('status', 'missing')}")
 
     message = message or f"[AI:{run.get('agent_id')}] {run.get('task_summary', run_id)}"
-    steps = [
-        {"name": "stage", "argv": ["git", "add", "--all"]},
-        {
-            "name": "commit",
-            "argv": [
-                "git",
-                "-c",
-                f"user.name={user_name}",
-                "-c",
-                f"user.email={user_email}",
-                "commit",
-                "-m",
-                message,
-            ],
-        },
-    ]
-    command = {
-        "run_id": run_id,
-        "agent_id": run.get("agent_id"),
-        "worktree": run.get("worktree"),
-        "message": message,
-        "steps": [
-            {**step, "display": shlex.join(step["argv"])}
-            for step in steps
-        ],
-        "created_at": _now(),
-    }
+    command = _expected_commit_command(
+        run_id=run_id,
+        run=run,
+        message=message,
+        user_name=user_name,
+        user_email=user_email,
+    )
+    command["created_at"] = _now()
     output_path = run_dir / "commit_command.json"
     output_path.write_text(json.dumps(command, indent=2) + "\n")
     _append_trace(run_dir, {"event": "commit_command_rendered", "run_id": run_id})
@@ -89,11 +70,19 @@ def render_commit_command(
 def run_commit_command(target: Path, run_id: str, timeout_seconds: float) -> dict[str, Any]:
     if timeout_seconds <= 0:
         raise GitPublishError("timeout must be greater than 0")
-    run_dir, _run, cwd = _load_writer_workspace(target, run_id)
+    run_dir, run, cwd = _load_writer_workspace(target, run_id)
     command_path = run_dir / "commit_command.json"
     if not command_path.exists():
         raise GitPublishError(f"commit command is missing for {run_id}")
     command = json.loads(command_path.read_text())
+    message = command.get("message") or f"[AI:{run.get('agent_id')}] {run.get('task_summary', run_id)}"
+    expected = _expected_commit_command(run_id=run_id, run=run, message=message)
+    _validate_command_fields(
+        command,
+        expected,
+        ["run_id", "agent_id", "worktree", "message", "steps"],
+        "commit command does not match rendered git policy",
+    )
     steps = command.get("steps")
     if not isinstance(steps, list) or not steps:
         raise GitPublishError("commit command steps must be a non-empty list")
@@ -159,17 +148,8 @@ def render_push_command(target: Path, run_id: str, remote: str = "origin") -> Pa
     if not isinstance(branch, str) or not branch:
         raise GitPublishError(f"run branch is missing for {run_id}")
 
-    argv = ["git", "push", remote, branch]
-    command = {
-        "run_id": run_id,
-        "agent_id": run.get("agent_id"),
-        "worktree": run.get("worktree"),
-        "remote": remote,
-        "branch": branch,
-        "argv": argv,
-        "display": shlex.join(argv),
-        "created_at": _now(),
-    }
+    command = _expected_push_command(run_id=run_id, run=run, remote=remote)
+    command["created_at"] = _now()
     output_path = run_dir / "push_command.json"
     output_path.write_text(json.dumps(command, indent=2) + "\n")
     _append_trace(run_dir, {"event": "push_command_rendered", "run_id": run_id, "remote": remote, "branch": branch})
@@ -179,11 +159,21 @@ def render_push_command(target: Path, run_id: str, remote: str = "origin") -> Pa
 def run_push_command(target: Path, run_id: str, timeout_seconds: float) -> dict[str, Any]:
     if timeout_seconds <= 0:
         raise GitPublishError("timeout must be greater than 0")
-    run_dir, _run, cwd = _load_writer_workspace(target, run_id)
+    run_dir, run, cwd = _load_writer_workspace(target, run_id)
     command_path = run_dir / "push_command.json"
     if not command_path.exists():
         raise GitPublishError(f"push command is missing for {run_id}")
     command = json.loads(command_path.read_text())
+    remote = command.get("remote", "origin")
+    if not isinstance(remote, str) or not remote:
+        raise GitPublishError("push command remote must be a non-empty string")
+    expected = _expected_push_command(run_id=run_id, run=run, remote=remote)
+    _validate_command_fields(
+        command,
+        expected,
+        ["run_id", "agent_id", "worktree", "remote", "branch", "argv", "display"],
+        "push command does not match rendered git policy",
+    )
     argv = command.get("argv")
     if not isinstance(argv, list) or not argv or not all(isinstance(item, str) for item in argv):
         raise GitPublishError("push command argv must be a non-empty string list")
@@ -236,6 +226,65 @@ def _load_writer_workspace(target: Path, run_id: str) -> tuple[Path, dict[str, A
     if not cwd.exists() or not cwd.is_dir():
         raise GitPublishError(f"run worktree does not exist: {worktree}")
     return run_dir, run, cwd
+
+
+def _expected_commit_command(
+    run_id: str,
+    run: dict[str, Any],
+    message: str,
+    user_name: str = "AI Harness",
+    user_email: str = "ai-harness@example.invalid",
+) -> dict[str, Any]:
+    steps = [
+        {"name": "stage", "argv": ["git", "add", "--all"]},
+        {
+            "name": "commit",
+            "argv": [
+                "git",
+                "-c",
+                f"user.name={user_name}",
+                "-c",
+                f"user.email={user_email}",
+                "commit",
+                "-m",
+                message,
+            ],
+        },
+    ]
+    return {
+        "run_id": run_id,
+        "agent_id": run.get("agent_id"),
+        "worktree": run.get("worktree"),
+        "message": message,
+        "steps": [{**step, "display": shlex.join(step["argv"])} for step in steps],
+    }
+
+
+def _expected_push_command(run_id: str, run: dict[str, Any], remote: str) -> dict[str, Any]:
+    branch = run.get("branch")
+    if not isinstance(branch, str) or not branch:
+        raise GitPublishError(f"run branch is missing for {run_id}")
+    argv = ["git", "push", remote, branch]
+    return {
+        "run_id": run_id,
+        "agent_id": run.get("agent_id"),
+        "worktree": run.get("worktree"),
+        "remote": remote,
+        "branch": branch,
+        "argv": argv,
+        "display": shlex.join(argv),
+    }
+
+
+def _validate_command_fields(
+    command: dict[str, Any],
+    expected: dict[str, Any],
+    keys: list[str],
+    error: str,
+) -> None:
+    for key in keys:
+        if command.get(key) != expected.get(key):
+            raise GitPublishError(f"{error}: {key}")
 
 
 def _porcelain_path(line: str) -> str:
