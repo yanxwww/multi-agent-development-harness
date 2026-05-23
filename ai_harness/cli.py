@@ -8,6 +8,13 @@ from .connectors import render_connector_command
 from .dispatch import dispatch_plan
 from .executor import run_connector_command
 from .gates import run_pr_gate, run_validation_gate
+from .git_publish import (
+    render_commit_command,
+    render_push_command,
+    run_commit_command,
+    run_diff_gate,
+    run_push_command,
+)
 from .orchestrator import dispatch_run
 from .pull_requests import render_pr_command, run_pr_command
 from .runs import create_run, render_pr_body
@@ -104,6 +111,30 @@ def build_parser() -> argparse.ArgumentParser:
     run_pr_command_parser.add_argument("--run", required=True, help="Run id.")
     run_pr_command_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds for the PR command.")
 
+    diff_gate_parser = subparsers.add_parser("diff-gate", help="Evaluate writer worktree diff before commit.")
+    diff_gate_parser.add_argument("--target", default=".", help="Target repository root.")
+    diff_gate_parser.add_argument("--run", required=True, help="Run id.")
+
+    commit_command_parser = subparsers.add_parser("commit-command", help="Render deterministic git add/commit steps.")
+    commit_command_parser.add_argument("--target", default=".", help="Target repository root.")
+    commit_command_parser.add_argument("--run", required=True, help="Run id.")
+    commit_command_parser.add_argument("--message", help="Commit message. Defaults to the AI run title.")
+
+    run_commit_command_parser = subparsers.add_parser("run-commit-command", help="Execute rendered commit steps.")
+    run_commit_command_parser.add_argument("--target", default=".", help="Target repository root.")
+    run_commit_command_parser.add_argument("--run", required=True, help="Run id.")
+    run_commit_command_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per commit step.")
+
+    push_command_parser = subparsers.add_parser("push-command", help="Render deterministic git push command.")
+    push_command_parser.add_argument("--target", default=".", help="Target repository root.")
+    push_command_parser.add_argument("--run", required=True, help="Run id.")
+    push_command_parser.add_argument("--remote", default="origin", help="Git remote to push to.")
+
+    run_push_command_parser = subparsers.add_parser("run-push-command", help="Execute rendered push command.")
+    run_push_command_parser.add_argument("--target", default=".", help="Target repository root.")
+    run_push_command_parser.add_argument("--run", required=True, help="Run id.")
+    run_push_command_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds for git push.")
+
     dispatch_run_parser = subparsers.add_parser("dispatch-run", help="Dispatch, execute, validate, and gate a SchedulePlan.")
     dispatch_run_parser.add_argument("--target", default=".", help="Target repository root.")
     dispatch_run_parser.add_argument("--issue", required=True, help="Issue id, such as 123 or issue-123.")
@@ -119,6 +150,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dispatch_run_parser.add_argument("--pr-base", default="main", help="Base branch for prepared PR commands.")
     dispatch_run_parser.add_argument("--draft-pr", action="store_true", help="Render prepared PR commands as draft PRs.")
+    dispatch_run_parser.add_argument(
+        "--commit-and-push",
+        action="store_true",
+        help="After PR gate, commit worktree changes and push the run branch before PR command preparation.",
+    )
+    dispatch_run_parser.add_argument("--push-remote", default="origin", help="Git remote used by --commit-and-push.")
     dispatch_run_parser.add_argument(
         "--validation-mode",
         choices=["run", "skip"],
@@ -222,6 +259,26 @@ def main(argv: list[str] | None = None) -> int:
             execution = run_pr_command(target=target, run_id=args.run, timeout_seconds=args.timeout)
             print(f"PR command {execution['status']} for {args.run}")
             return 0 if execution["status"] == "succeeded" else 1
+        if args.command == "diff-gate":
+            gate = run_diff_gate(target=target, run_id=args.run)
+            print(f"Diff gate {gate['status']} for {args.run}")
+            return 0 if gate["status"] == "passed" else 1
+        if args.command == "commit-command":
+            command_path = render_commit_command(target=target, run_id=args.run, message=args.message)
+            print(f"Wrote commit command to {command_path}")
+            return 0
+        if args.command == "run-commit-command":
+            execution = run_commit_command(target=target, run_id=args.run, timeout_seconds=args.timeout)
+            print(f"Commit command {execution['status']} for {args.run}")
+            return 0 if execution["status"] == "succeeded" else 1
+        if args.command == "push-command":
+            command_path = render_push_command(target=target, run_id=args.run, remote=args.remote)
+            print(f"Wrote push command to {command_path}")
+            return 0
+        if args.command == "run-push-command":
+            execution = run_push_command(target=target, run_id=args.run, timeout_seconds=args.timeout)
+            print(f"Push command {execution['status']} for {args.run}")
+            return 0 if execution["status"] == "succeeded" else 1
         if args.command == "dispatch-run":
             summary = dispatch_run(
                 target=target,
@@ -236,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
                 prepare_pr_command=args.prepare_pr_command,
                 pr_base=args.pr_base,
                 draft_pr=args.draft_pr,
+                commit_and_push=args.commit_and_push,
+                push_remote=args.push_remote,
             )
             print(f"Dispatch run {summary['status']} for {args.run_id}")
             return 0 if summary["status"] == "succeeded" else 1

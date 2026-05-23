@@ -452,6 +452,143 @@ class HarnessCliTests(unittest.TestCase):
             self.assertIn("pr_command_started", trace)
             self.assertIn("pr_command_finished", trace)
 
+    def test_diff_gate_records_worktree_changes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            self._init_git_repo(root)
+            task.write_text(json.dumps({"summary": "Add API"}))
+            self.assertEqual(
+                main(
+                    [
+                        "create-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--agent",
+                        "backend-implementer",
+                        "--task",
+                        str(task),
+                        "--run-id",
+                        "run-diff-gate-001",
+                    ]
+                ),
+                0,
+            )
+            run_dir = root / ".ai" / "runs" / "run-diff-gate-001"
+            worktree = root / ".worktrees" / "run-diff-gate-001-backend-implementer"
+            (worktree / "AGENTS.md").write_text((worktree / "AGENTS.md").read_text() + "\nDiff gate change.\n")
+
+            self.assertEqual(main(["diff-gate", "--target", str(root), "--run", "run-diff-gate-001"]), 0)
+
+            gate = json.loads((run_dir / "diff_gate.json").read_text())
+            self.assertEqual(gate["status"], "passed")
+            self.assertIn("AGENTS.md", gate["changed_files"])
+            self.assertTrue((run_dir / "diff.patch").exists())
+
+    def test_diff_gate_includes_untracked_file_patch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            self._init_git_repo(root)
+            task.write_text(json.dumps({"summary": "Add API"}))
+            main(
+                [
+                    "create-run",
+                    "--target",
+                    str(root),
+                    "--issue",
+                    "123",
+                    "--agent",
+                    "backend-implementer",
+                    "--task",
+                    str(task),
+                    "--run-id",
+                    "run-diff-untracked-001",
+                ]
+            )
+            run_dir = root / ".ai" / "runs" / "run-diff-untracked-001"
+            worktree = root / ".worktrees" / "run-diff-untracked-001-backend-implementer"
+            (worktree / "new-file.txt").write_text("new evidence\n")
+
+            self.assertEqual(main(["diff-gate", "--target", str(root), "--run", "run-diff-untracked-001"]), 0)
+
+            gate = json.loads((run_dir / "diff_gate.json").read_text())
+            patch = (run_dir / "diff.patch").read_text()
+            self.assertIn("new-file.txt", gate["changed_files"])
+            self.assertIn("new-file.txt", patch)
+            self.assertIn("new evidence", patch)
+
+    def test_commit_command_requires_passed_diff_gate_and_commits_worktree(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            self._init_git_repo(root)
+            task.write_text(json.dumps({"summary": "Add API"}))
+            main(
+                [
+                    "create-run",
+                    "--target",
+                    str(root),
+                    "--issue",
+                    "123",
+                    "--agent",
+                    "backend-implementer",
+                    "--task",
+                    str(task),
+                    "--run-id",
+                    "run-commit-001",
+                ]
+            )
+            run_dir = root / ".ai" / "runs" / "run-commit-001"
+            worktree = root / ".worktrees" / "run-commit-001-backend-implementer"
+            (worktree / "AGENTS.md").write_text((worktree / "AGENTS.md").read_text() + "\nCommit gate change.\n")
+            self.assertEqual(main(["commit-command", "--target", str(root), "--run", "run-commit-001"]), 1)
+
+            self.assertEqual(main(["diff-gate", "--target", str(root), "--run", "run-commit-001"]), 0)
+            self.assertEqual(main(["commit-command", "--target", str(root), "--run", "run-commit-001"]), 0)
+            command = json.loads((run_dir / "commit_command.json").read_text())
+            self.assertEqual(command["message"], "[AI:backend-implementer] Add API")
+            self.assertEqual(command["steps"][0]["argv"][:2], ["git", "add"])
+            self.assertEqual(command["steps"][1]["argv"][0], "git")
+
+            self.assertEqual(main(["run-commit-command", "--target", str(root), "--run", "run-commit-001", "--timeout", "5"]), 0)
+            execution = json.loads((run_dir / "commit_execution.json").read_text())
+            self.assertEqual(execution["status"], "succeeded")
+            self.assertTrue(execution["commit_sha"])
+            self.assertEqual(json.loads((run_dir / "post_commit_diff_gate.json").read_text())["status"], "clean")
+
+    def test_push_command_requires_successful_commit_and_captures_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_run(root, "run-push-001")
+            run = json.loads((run_dir / "run.json").read_text())
+            run.update(
+                {
+                    "mode": "writer",
+                    "branch": "ai/issue-123/backend-implementer/run-push-001",
+                    "worktree": "workspace",
+                    "task_summary": "Add API",
+                }
+            )
+            (run_dir / "run.json").write_text(json.dumps(run))
+            (root / "workspace").mkdir()
+            (run_dir / "commit_execution.json").write_text(
+                json.dumps({"status": "succeeded", "commit_sha": "abc123"})
+            )
+
+            self.assertEqual(main(["push-command", "--target", str(root), "--run", "run-push-001", "--remote", "origin"]), 0)
+            command = json.loads((run_dir / "push_command.json").read_text())
+            self.assertEqual(command["argv"], ["git", "push", "origin", "ai/issue-123/backend-implementer/run-push-001"])
+            self.assertEqual(main(["run-push-command", "--target", str(root), "--run", "run-push-001", "--timeout", "5"]), 1)
+            execution = json.loads((run_dir / "push_execution.json").read_text())
+            self.assertEqual(execution["status"], "failed")
+            self.assertNotEqual(execution["exit_code"], 0)
+
     def test_dispatch_run_chains_connector_validation_and_pr_gate(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -572,6 +709,77 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(command["base"], "main")
             self.assertTrue(command["draft"])
 
+    def test_dispatch_run_can_commit_push_then_prepare_pr_command(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            remote = root / "origin.git"
+            main(["init", "--target", str(root)])
+            self._install_writing_test_connector(root)
+            self._init_git_repo(root)
+            self._init_bare_remote(root, remote)
+            plan = root / "schedule_plan.json"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T3",
+                                "mode": "writer",
+                                "depends_on": [],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                                "success_criteria": ["Connector writes a change"],
+                            }
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "dispatch-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-dispatch-publish-001",
+                        "--validation-mode",
+                        "skip",
+                        "--timeout",
+                        "5",
+                        "--commit-and-push",
+                        "--push-remote",
+                        "origin",
+                        "--prepare-pr-command",
+                        "--pr-base",
+                        "main",
+                        "--draft-pr",
+                    ]
+                ),
+                0,
+            )
+
+            schedule_dir = root / ".ai" / "runs" / "run-dispatch-publish-001"
+            child_run_id = "run-dispatch-publish-001-T3-backend-implementer"
+            child_dir = root / ".ai" / "runs" / child_run_id
+            summary = json.loads((schedule_dir / "dispatch_run.json").read_text())
+            child = summary["children"][0]
+            self.assertEqual(child["diff_gate_status"], "passed")
+            self.assertEqual(child["commit_status"], "succeeded")
+            self.assertEqual(child["push_status"], "succeeded")
+            self.assertEqual(child["pr_command"], f".ai/runs/{child_run_id}/pr_command.json")
+            self.assertEqual(json.loads((child_dir / "push_execution.json").read_text())["status"], "succeeded")
+            self.assertTrue((child_dir / "pr_command.json").exists())
+            self.assertEqual(self._remote_branch_sha(remote, "ai/issue-123/backend-implementer/" + child_run_id), child["commit_sha"])
+
     def test_dispatch_plan_targets_agent_identity_and_uses_private_binding(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -684,6 +892,37 @@ class HarnessCliTests(unittest.TestCase):
         )
         assignments.write_text(text)
 
+    def _install_writing_test_connector(self, root: Path) -> None:
+        connector = root / ".ai" / "connectors" / "test-cli.yml"
+        connector.write_text(
+            "\n".join(
+                [
+                    "id: test-cli",
+                    "version: 1",
+                    f"executable: {sys.executable}",
+                    "profiles:",
+                    "  test-profile:",
+                    "    mode: test",
+                    "command_templates:",
+                    (
+                        "  test-profile: "
+                        f"{sys.executable} -c \"from pathlib import Path; "
+                        "p=Path('AGENTS.md'); "
+                        "p.write_text(p.read_text() + '\\nConnector change.\\n'); "
+                        "print('{\\\"event\\\":\\\"agent_done\\\"}')\""
+                    ),
+                    "",
+                ]
+            )
+        )
+        assignments = root / ".ai" / "private" / "assignments.yml"
+        text = assignments.read_text()
+        text = text.replace(
+            "  backend-implementer:\n    connector: codex-cli\n    profile: writer-workspace\n",
+            "  backend-implementer:\n    connector: test-cli\n    profile: test-profile\n",
+        )
+        assignments.write_text(text)
+
     def _init_git_repo(self, root: Path) -> None:
         import subprocess
 
@@ -696,6 +935,24 @@ class HarnessCliTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+
+    def _init_bare_remote(self, root: Path, remote: Path) -> None:
+        import subprocess
+
+        subprocess.run(["git", "init", "--bare", str(remote)], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def _remote_branch_sha(self, remote: Path, branch: str) -> str:
+        import subprocess
+
+        result = subprocess.run(
+            ["git", "--git-dir", str(remote), "rev-parse", branch],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        return result.stdout.strip()
 
     def test_dispatch_plan_rejects_runtime_visible_to_scheduler(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -23,9 +23,14 @@ python3 -m ai_harness connector-command --target . --run run-20260523-001
 python3 -m ai_harness run-connector --target . --run run-20260523-001 --timeout 900 --retries 1
 python3 -m ai_harness validation-gate --target . --run run-20260523-001 --timeout 900
 python3 -m ai_harness pr-gate --target . --run run-20260523-001
+python3 -m ai_harness diff-gate --target . --run run-20260523-001
+python3 -m ai_harness commit-command --target . --run run-20260523-001
+python3 -m ai_harness run-commit-command --target . --run run-20260523-001 --timeout 900
+python3 -m ai_harness push-command --target . --run run-20260523-001 --remote origin
+python3 -m ai_harness run-push-command --target . --run run-20260523-001 --timeout 900
 python3 -m ai_harness pr-command --target . --run run-20260523-001 --base main --draft
 python3 -m ai_harness run-pr-command --target . --run run-20260523-001 --timeout 900
-python3 -m ai_harness dispatch-run --target . --issue 123 --plan schedule_plan.json --run-id run-dispatch-001 --timeout 900 --retries 1 --prepare-pr-command --pr-base main --draft-pr
+python3 -m ai_harness dispatch-run --target . --issue 123 --plan schedule_plan.json --run-id run-dispatch-001 --timeout 900 --retries 1 --commit-and-push --push-remote origin --prepare-pr-command --pr-base main --draft-pr
 ```
 
 Installable entry point:
@@ -61,12 +66,18 @@ The deterministic dispatcher validates the plan, resolves `agent_id -> connector
 
 `pr-gate` renders `pr-body.md` for writer runs and blocks the run unless evidence, connector execution, validation status, and PR body requirements are satisfied.
 
+`diff-gate` checks the writer worktree for changed files, writes `diff_gate.json`, and stores `diff.patch` for review evidence.
+
+`commit-command` renders deterministic git add/commit steps into `commit_command.json`. `run-commit-command` executes those steps in the run worktree, writes `commit_execution.json`, captures logs, records the commit SHA, and verifies the post-commit worktree is clean.
+
+`push-command` renders deterministic `git push <remote> <branch>` into `push_command.json`. `run-push-command` executes it in the run worktree and records `push_execution.json` plus stdout/stderr logs.
+
 `pr-command` renders a gated `gh pr create` command into `.ai/runs/<run-id>/pr_command.json`. It only runs after `pr_gate.json` has status `passed`.
 
 `run-pr-command` executes `pr_command.json` and records `pr_stdout.log`, `pr_stderr.log`, `pr_execution.json`, and trace events. It depends on the local GitHub CLI environment being authenticated and the target branch being publishable.
 
-`dispatch-run` is the deterministic orchestration path. It calls `dispatch-plan`, renders each child run's `connector_command.json`, executes the connector with timeout/retry trace capture, runs the validation gate, then runs the PR body/gate check. With `--prepare-pr-command`, gated writer children also get a deterministic PR command artifact. The scheduler still targets only `agent_id`; connector selection remains private to the dispatcher.
+`dispatch-run` is the deterministic orchestration path. It calls `dispatch-plan`, renders each child run's `connector_command.json`, executes the connector with timeout/retry trace capture, runs the validation gate, then runs the PR body/gate check. With `--commit-and-push`, gated writer children run `diff-gate -> commit-command -> run-commit-command -> push-command -> run-push-command`. With `--prepare-pr-command`, pushed writer children also get a deterministic PR command artifact. The scheduler still targets only `agent_id`; connector selection remains private to the dispatcher.
 
 ## Current MVP Boundaries
 
-This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, renders deterministic connector and PR commands, executes connector and PR commands with captured logs and trace, and gates writer runs through validation and PR body checks. It does not yet manage commit creation, branch push policy, skill installation into external runtimes, or branch locks. Those belong in the next orchestration layer.
+This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, renders deterministic connector/git/PR commands, executes those commands with captured logs and trace, and gates writer runs through validation, PR body, diff, commit, and push checks. It does not yet run CI, install skills into external runtimes, enforce branch locks, or merge pull requests. Those belong in the next orchestration layer.

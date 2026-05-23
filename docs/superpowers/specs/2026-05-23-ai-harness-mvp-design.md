@@ -27,12 +27,15 @@ The CLI provides:
 - `harness run-connector` to execute a rendered connector command with stdout/stderr capture, JSON event extraction, timeout, retry, and exit trace.
 - `harness validation-gate` to run or explicitly skip evidence validation commands and write validation gate artifacts.
 - `harness pr-gate` to render a PR body for writer runs and block runs missing connector, validation, evidence, or PR body requirements.
-- `harness dispatch-run` to chain `dispatch-plan -> connector-command -> run-connector -> validation-gate -> pr-gate` deterministically.
+- `harness dispatch-run` to chain `dispatch-plan -> connector-command -> run-connector -> validation-gate -> pr-gate` deterministically, with optional commit/push and PR command preparation.
 - `harness pr-body` to render a PR body from run evidence.
+- `harness diff-gate` to confirm the writer worktree contains auditable changes and capture `diff.patch`.
+- `harness commit-command` and `harness run-commit-command` to render and execute deterministic git add/commit steps with trace.
+- `harness push-command` and `harness run-push-command` to render and execute deterministic branch push commands with trace.
 - `harness pr-command` to render a gated `gh pr create` command after PR readiness passes.
 - `harness run-pr-command` to execute a rendered PR command with stdout/stderr, timeout, exit code, and trace capture.
 
-The MVP includes connector contract metadata for Codex CLI and Claude Code CLI. Connector and PR execution are mediated through rendered command artifacts so the dispatcher remains deterministic, traceable, and testable.
+The MVP includes connector contract metadata for Codex CLI and Claude Code CLI. Connector, git publication, and PR execution are mediated through rendered command artifacts so the dispatcher remains deterministic, traceable, and testable.
 
 ## Repository Contract
 
@@ -111,7 +114,7 @@ The scheduler sees only agent identities and produces a `SchedulePlan`:
 
 The dispatcher sees `.ai/private/assignments.yml` and resolves `backend-implementer -> codex-cli / writer-workspace`. Connector, model, credentials, and CLI flags are not part of scheduler output.
 
-`dispatch-run` keeps this boundary intact. It first prepares child AgentRun records from the scheduler-visible plan, then the dispatcher privately renders and executes each connector command, records connector execution, runs validation, and evaluates PR readiness. When `--prepare-pr-command` is enabled, it also renders PR creation commands for child writer runs that pass the PR gate.
+`dispatch-run` keeps this boundary intact. It first prepares child AgentRun records from the scheduler-visible plan, then the dispatcher privately renders and executes each connector command, records connector execution, runs validation, and evaluates PR readiness. When `--commit-and-push` is enabled, it runs the deterministic publication chain for gated writer runs. When `--prepare-pr-command` is enabled, it also renders PR creation commands after the writer branch has passed the enabled publication gates.
 
 ## Run Model
 
@@ -152,6 +155,14 @@ Every AI PR body includes:
 - unresolved questions
 
 After the PR gate passes, `harness pr-command` can produce a deterministic `gh pr create` command artifact. `harness run-pr-command` can execute that artifact if the local GitHub CLI is authenticated and the branch is ready for publication. The command artifact is separate from gate evaluation so audit and execution can be split.
+
+The deterministic writer publication chain is:
+
+```text
+diff-gate -> commit-command -> run-commit-command -> push-command -> run-push-command -> pr-command
+```
+
+Each stage writes a run-local artifact and trace event so branch publication can be reviewed independently from agent execution.
 
 ## State Machine
 
@@ -200,14 +211,33 @@ Future orchestrators can enforce the same state transitions.
 - PR body exists
 - branch name is present
 
+`harness diff-gate` checks commit readiness:
+
+- run is a writer run
+- declared worktree exists
+- `git status --porcelain` has changed files
+- `diff.patch` is captured
+
+`harness run-commit-command` checks post-commit state:
+
+- commit command steps executed successfully
+- commit SHA is recorded
+- post-commit worktree status is clean
+
+`harness push-command` checks push readiness:
+
+- commit execution succeeded
+- commit SHA exists
+- branch name is present
+
 ## Non-Goals
 
 The MVP does not:
 
 - run CI
-- create commits or manage branch push policy
 - install skills into external agent environments
 - implement stacked PRs or integration PRs
 - enforce branch locks
+- merge pull requests
 
 These are adapter and orchestration layers that can be added after the repo contract is stable.
