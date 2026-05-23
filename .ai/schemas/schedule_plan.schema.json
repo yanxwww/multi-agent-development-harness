@@ -6,6 +6,7 @@
     "blocked",
     "risk_notes"
   ],
+  "additionalProperties": false,
   "properties": {
     "run_plan": {
       "type": "array",
@@ -20,6 +21,7 @@
           "requires_pr",
           "risk_level"
         ],
+        "additionalProperties": false,
         "properties": {
           "agent_id": {
             "type": "string"
@@ -73,7 +75,23 @@
       }
     },
     "blocked": {
-      "type": "array"
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "task_id",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
     },
     "risk_notes": {
       "type": "array",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,18 @@ class DispatchError(Exception):
 
 
 FORBIDDEN_SCHEDULER_KEYS = {"runtime", "runtime_id", "connector", "connector_profile", "model", "api_key"}
+PLAN_KEYS = {"run_plan", "blocked", "risk_notes"}
+RUN_PLAN_ITEM_KEYS = {
+    "agent_id",
+    "task_id",
+    "mode",
+    "depends_on",
+    "expected_output",
+    "requires_pr",
+    "risk_level",
+    "success_criteria",
+}
+BLOCKED_ITEM_KEYS = {"task_id", "reason"}
 EXPECTED_OUTPUTS = {
     "issue_spec",
     "task_graph",
@@ -52,65 +65,86 @@ def dispatch_plan(
             raise DispatchError(f"agent has no private connector binding: {agent_id}")
         _validate_mode_policy(item, catalog_entry)
 
+    child_run_ids = [_child_run_id(run_id, item["task_id"], item["agent_id"]) for item in plan["run_plan"]]
     schedule_dir = target / ".ai" / "runs" / run_id
     if schedule_dir.exists():
         raise DispatchError(f"schedule run already exists: {run_id}")
-    (schedule_dir / "tasks").mkdir(parents=True)
-    (schedule_dir / "agent_results").mkdir()
-    (schedule_dir / "evidence").mkdir()
-    (schedule_dir / "schedule_plan.json").write_text(json.dumps(plan, indent=2) + "\n")
+    for child_run_id in child_run_ids:
+        child_run_dir = target / ".ai" / "runs" / child_run_id
+        if child_run_dir.exists():
+            raise DispatchError(f"child run already exists: {child_run_id}")
 
     issue_id = normalize_issue_id(issue)
-    log_path = schedule_dir / "dispatch_log.jsonl"
-    with log_path.open("w") as log:
-        for item in plan["run_plan"]:
-            agent_id = item["agent_id"]
-            binding = bindings.get(agent_id)
+    created_child_run_ids: list[str] = []
+    try:
+        (schedule_dir / "tasks").mkdir(parents=True)
+        (schedule_dir / "agent_results").mkdir()
+        (schedule_dir / "evidence").mkdir()
+        (schedule_dir / "schedule_plan.json").write_text(json.dumps(plan, indent=2) + "\n")
 
-            child_run_id = _child_run_id(run_id, item["task_id"], agent_id)
-            task_path = schedule_dir / "tasks" / f"{_safe_id(item['task_id'])}-{agent_id}.json"
-            task = {
-                "task_id": item["task_id"],
-                "summary": f"{item['task_id']}: {item['expected_output']} by {agent_id}",
-                "issue": issue_id,
-                "acceptance": item.get("success_criteria", []),
-                "depends_on": item.get("depends_on", []),
-                "risk_level": item.get("risk_level"),
-            }
-            task_path.write_text(json.dumps(task, indent=2) + "\n")
-            child_run = create_run(
-                target=target,
-                issue=issue,
-                agent_id=agent_id,
-                task_path=task_path,
-                run_id=child_run_id,
-                base_ref=base_ref,
-                create_worktree=create_worktree and item["mode"] == "writer",
-                mode=item["mode"],
-            )
-            log.write(
-                json.dumps(
-                    {
-                        "event": "dispatch_prepared",
-                        "schedule_run_id": run_id,
-                        "run_id": child_run["run_id"],
-                        "task_id": item["task_id"],
-                        "agent_id": agent_id,
-                        "mode": item["mode"],
-                        "connector": binding["connector"],
-                        "connector_profile": binding["profile"],
-                        "requires_pr": item["requires_pr"],
-                        "risk_level": item["risk_level"],
-                    }
+        log_path = schedule_dir / "dispatch_log.jsonl"
+        with log_path.open("w") as log:
+            for item in plan["run_plan"]:
+                agent_id = item["agent_id"]
+                binding = bindings.get(agent_id)
+
+                child_run_id = _child_run_id(run_id, item["task_id"], agent_id)
+                task_path = schedule_dir / "tasks" / f"{_safe_id(item['task_id'])}-{agent_id}.json"
+                task = {
+                    "task_id": item["task_id"],
+                    "summary": f"{item['task_id']}: {item['expected_output']} by {agent_id}",
+                    "issue": issue_id,
+                    "acceptance": item.get("success_criteria", []),
+                    "depends_on": item.get("depends_on", []),
+                    "risk_level": item.get("risk_level"),
+                }
+                task_path.write_text(json.dumps(task, indent=2) + "\n")
+                child_run = create_run(
+                    target=target,
+                    issue=issue,
+                    agent_id=agent_id,
+                    task_path=task_path,
+                    run_id=child_run_id,
+                    base_ref=base_ref,
+                    create_worktree=create_worktree and item["mode"] == "writer",
+                    mode=item["mode"],
                 )
-                + "\n"
-            )
+                created_child_run_ids.append(child_run_id)
+                log.write(
+                    json.dumps(
+                        {
+                            "event": "dispatch_prepared",
+                            "schedule_run_id": run_id,
+                            "run_id": child_run["run_id"],
+                            "task_id": item["task_id"],
+                            "agent_id": agent_id,
+                            "mode": item["mode"],
+                            "connector": binding["connector"],
+                            "connector_profile": binding["profile"],
+                            "requires_pr": item["requires_pr"],
+                            "risk_level": item["risk_level"],
+                        }
+                    )
+                    + "\n"
+                )
+    except Exception:
+        for child_run_id in created_child_run_ids:
+            child_run_dir = target / ".ai" / "runs" / child_run_id
+            if child_run_dir.exists():
+                shutil.rmtree(child_run_dir)
+        if schedule_dir.exists():
+            shutil.rmtree(schedule_dir)
+        raise
     return schedule_dir
 
 
 def _validate_schedule_plan(plan: Any) -> None:
     if not isinstance(plan, dict):
         raise DispatchError("schedule plan must be an object")
+    _reject_forbidden_scheduler_keys(plan)
+    extra = sorted(set(plan) - PLAN_KEYS)
+    if extra:
+        raise DispatchError(f"schedule plan has unknown keys: {extra}")
     for key in ["run_plan", "blocked", "risk_notes"]:
         if key not in plan:
             raise DispatchError(f"schedule plan missing required key: {key}")
@@ -122,6 +156,11 @@ def _validate_schedule_plan(plan: Any) -> None:
         raise DispatchError("schedule plan risk_notes must be a list")
     for index, item in enumerate(plan["run_plan"]):
         _validate_plan_item(index, item)
+    for index, item in enumerate(plan["blocked"]):
+        _validate_blocked_item(index, item)
+    for index, note in enumerate(plan["risk_notes"]):
+        if not isinstance(note, str):
+            raise DispatchError(f"risk_notes[{index}] must be a string")
 
 
 def _validate_plan_item(index: int, item: Any) -> None:
@@ -130,6 +169,9 @@ def _validate_plan_item(index: int, item: Any) -> None:
     leaked = sorted(FORBIDDEN_SCHEDULER_KEYS.intersection(item))
     if leaked:
         raise DispatchError(f"run_plan[{index}] exposes dispatcher-only keys: {leaked}")
+    extra = sorted(set(item) - RUN_PLAN_ITEM_KEYS)
+    if extra:
+        raise DispatchError(f"run_plan[{index}] has unknown keys: {extra}")
     required = ["agent_id", "task_id", "mode", "depends_on", "expected_output", "requires_pr", "risk_level"]
     for key in required:
         if key not in item:
@@ -144,6 +186,36 @@ def _validate_plan_item(index: int, item: Any) -> None:
         raise DispatchError(f"run_plan[{index}] depends_on must be a list")
     if not isinstance(item["requires_pr"], bool):
         raise DispatchError(f"run_plan[{index}] requires_pr must be a boolean")
+    if "success_criteria" in item and not isinstance(item["success_criteria"], list):
+        raise DispatchError(f"run_plan[{index}] success_criteria must be a list")
+    for criteria_index, criteria in enumerate(item.get("success_criteria", [])):
+        if not isinstance(criteria, str):
+            raise DispatchError(f"run_plan[{index}].success_criteria[{criteria_index}] must be a string")
+
+
+def _validate_blocked_item(index: int, item: Any) -> None:
+    if not isinstance(item, dict):
+        raise DispatchError(f"blocked[{index}] must be an object")
+    extra = sorted(set(item) - BLOCKED_ITEM_KEYS)
+    if extra:
+        raise DispatchError(f"blocked[{index}] has unknown keys: {extra}")
+    for key in ["task_id", "reason"]:
+        if key not in item:
+            raise DispatchError(f"blocked[{index}] missing required key: {key}")
+        if not isinstance(item[key], str):
+            raise DispatchError(f"blocked[{index}].{key} must be a string")
+
+
+def _reject_forbidden_scheduler_keys(value: Any, path: str = "$") -> None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            next_path = f"{path}.{key}"
+            if key in FORBIDDEN_SCHEDULER_KEYS:
+                raise DispatchError(f"schedule plan exposes dispatcher-only key: {next_path}")
+            _reject_forbidden_scheduler_keys(nested, next_path)
+    elif isinstance(value, list):
+        for index, nested in enumerate(value):
+            _reject_forbidden_scheduler_keys(nested, f"{path}[{index}]")
 
 
 def _validate_mode_policy(item: dict[str, Any], catalog_entry: dict[str, Any]) -> None:

@@ -39,6 +39,19 @@ class HarnessCliTests(unittest.TestCase):
             main(["init", "--target", str(root)])
             self.assertEqual(main(["validate", "--target", str(root)]), 0)
 
+    def test_validate_rejects_nested_runtime_visible_catalog_binding(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            catalog = root / ".ai" / "agent-catalog.yml"
+            catalog.write_text(
+                catalog.read_text().replace(
+                    "  backend-implementer:\n    type: writer\n",
+                    "  backend-implementer:\n    type: writer\n    metadata:\n      connector: codex-cli\n",
+                )
+            )
+            self.assertEqual(main(["validate", "--target", str(root)]), 1)
+
     def test_create_run_writes_writer_metadata_without_worktree(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -73,6 +86,32 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(run["worktree"], ".worktrees/run-20260523-001-backend-implementer")
             self.assertTrue((run_dir / "trace.jsonl").exists())
             self.assertTrue((run_dir / "evidence.json").exists())
+
+    def test_create_run_worktree_failure_does_not_leave_stale_run_dir(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            task.write_text(json.dumps({"summary": "Add API"}))
+            self.assertEqual(
+                main(
+                    [
+                        "create-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--agent",
+                        "backend-implementer",
+                        "--task",
+                        str(task),
+                        "--run-id",
+                        "run-worktree-fails",
+                    ]
+                ),
+                1,
+            )
+            self.assertFalse((root / ".ai" / "runs" / "run-worktree-fails").exists())
 
     def test_pr_body_renders_evidence_bundle(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -211,6 +250,106 @@ class HarnessCliTests(unittest.TestCase):
                 ),
                 1,
             )
+
+    def test_dispatch_plan_rejects_nested_runtime_visible_to_scheduler(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plan = root / "bad_nested_schedule_plan.json"
+            main(["init", "--target", str(root)])
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T3",
+                                "mode": "writer",
+                                "depends_on": [],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                                "success_criteria": ["Backend tests pass"],
+                                "metadata": {"connector": "codex-cli"},
+                            }
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+            self.assertEqual(
+                main(
+                    [
+                        "dispatch-plan",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-schedule-001",
+                        "--no-worktree",
+                    ]
+                ),
+                1,
+            )
+            self.assertFalse((root / ".ai" / "runs" / "run-schedule-001").exists())
+
+    def test_dispatch_plan_failure_removes_schedule_and_child_runs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plan = root / "schedule_plan.json"
+            main(["init", "--target", str(root)])
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "pr-reviewer",
+                                "task_id": "T1",
+                                "mode": "read_only",
+                                "depends_on": [],
+                                "expected_output": "review_findings",
+                                "requires_pr": False,
+                                "risk_level": "low",
+                                "success_criteria": ["Findings are structured"],
+                            },
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T2",
+                                "mode": "writer",
+                                "depends_on": ["T1"],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                                "success_criteria": ["Backend tests pass"],
+                            },
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+            self.assertEqual(
+                main(
+                    [
+                        "dispatch-plan",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-schedule-rollback",
+                    ]
+                ),
+                1,
+            )
+            self.assertFalse((root / ".ai" / "runs" / "run-schedule-rollback").exists())
+            self.assertFalse((root / ".ai" / "runs" / "run-schedule-rollback-T1-pr-reviewer").exists())
+            self.assertFalse((root / ".ai" / "runs" / "run-schedule-rollback-T2-backend-implementer").exists())
 
 
 if __name__ == "__main__":

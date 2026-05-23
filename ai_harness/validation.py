@@ -12,6 +12,9 @@ class ValidationError(Exception):
     pass
 
 
+FORBIDDEN_SCHEDULER_VISIBLE_KEYS = {"runtime", "runtime_id", "connector", "connector_profile", "model", "api_key"}
+
+
 def validate_scaffold(target: Path) -> None:
     errors: list[str] = []
     required = [
@@ -42,9 +45,7 @@ def validate_scaffold(target: Path) -> None:
         if agent_id not in agents:
             errors.append(f"agent catalog references missing agent doc: {agent_id}")
         if isinstance(entry, dict):
-            for forbidden in ["runtime", "runtime_id", "connector", "model", "api_key"]:
-                if forbidden in entry:
-                    errors.append(f"agent catalog must not expose dispatcher binding key: {agent_id}.{forbidden}")
+            _collect_forbidden_scheduler_visible_keys(entry, f"agent-catalog.agents.{agent_id}", errors)
 
     binding_map = bindings.get("bindings", {}) if isinstance(bindings, dict) else {}
     for agent_id, binding in binding_map.items():
@@ -187,3 +188,14 @@ def _is_git_tracked(target: Path, relpath: str) -> bool:
     )
     return result.returncode == 0
 
+
+def _collect_forbidden_scheduler_visible_keys(value: Any, path: str, errors: list[str]) -> None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            next_path = f"{path}.{key}"
+            if key in FORBIDDEN_SCHEDULER_VISIBLE_KEYS:
+                errors.append(f"agent catalog must not expose dispatcher binding key: {next_path}")
+            _collect_forbidden_scheduler_visible_keys(nested, next_path, errors)
+    elif isinstance(value, list):
+        for index, nested in enumerate(value):
+            _collect_forbidden_scheduler_visible_keys(nested, f"{path}[{index}]", errors)

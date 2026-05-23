@@ -759,6 +759,7 @@ SCHEMAS = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "required": ["run_plan", "blocked", "risk_notes"],
+        "additionalProperties": False,
         "properties": {
             "run_plan": {
                 "type": "array",
@@ -773,6 +774,7 @@ SCHEMAS = {
                         "requires_pr",
                         "risk_level",
                     ],
+                    "additionalProperties": False,
                     "properties": {
                         "agent_id": {"type": "string"},
                         "task_id": {"type": "string"},
@@ -796,7 +798,18 @@ SCHEMAS = {
                     },
                 },
             },
-            "blocked": {"type": "array"},
+            "blocked": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["task_id", "reason"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "task_id": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                },
+            },
             "risk_notes": {"type": "array", "items": {"type": "string"}},
         },
     },
@@ -880,4 +893,3 @@ SCHEMAS = {
         },
     },
 }
-

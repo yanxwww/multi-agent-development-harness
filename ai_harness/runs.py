@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,19 +71,10 @@ def create_run(
             agent_id=agent_id,
         )
 
-    run_dir = target / ".ai" / "runs" / run_id
-    if run_dir.exists():
-        raise RunError(f"run already exists: {run_id}")
-    run_dir.mkdir(parents=True)
-
     agent_path = target / ".ai" / "agents" / f"{agent_id}.md"
     agent_hash = _sha256(agent_path)
     state = "planned"
     worktree_created = False
-    if create_worktree and mode == "writer":
-        _create_git_worktree(target, branch, target / worktree, base_ref)
-        state = "workspace_ready"
-        worktree_created = True
 
     run = {
         "run_id": run_id,
@@ -124,11 +116,30 @@ def create_run(
         "unresolved_questions": [],
     }
 
-    (run_dir / "task.json").write_text(json.dumps(task, indent=2) + "\n")
-    (run_dir / "binding.json").write_text(json.dumps(binding, indent=2) + "\n")
-    (run_dir / "run.json").write_text(json.dumps(run, indent=2) + "\n")
-    (run_dir / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
-    (run_dir / "trace.jsonl").write_text(json.dumps({"ts": _now(), "event": "run_created", "run_id": run_id}) + "\n")
+    run_dir = target / ".ai" / "runs" / run_id
+    if run_dir.exists():
+        raise RunError(f"run already exists: {run_id}")
+    worktree_path = target / worktree if worktree else None
+    try:
+        if create_worktree and mode == "writer":
+            _create_git_worktree(target, branch, worktree_path, base_ref)
+            state = "workspace_ready"
+            worktree_created = True
+            run["state"] = state
+            run["worktree_created"] = worktree_created
+
+        run_dir.mkdir(parents=True)
+        (run_dir / "task.json").write_text(json.dumps(task, indent=2) + "\n")
+        (run_dir / "binding.json").write_text(json.dumps(binding, indent=2) + "\n")
+        (run_dir / "run.json").write_text(json.dumps(run, indent=2) + "\n")
+        (run_dir / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+        (run_dir / "trace.jsonl").write_text(json.dumps({"ts": _now(), "event": "run_created", "run_id": run_id}) + "\n")
+    except Exception:
+        if run_dir.exists():
+            shutil.rmtree(run_dir)
+        if worktree_created and worktree_path is not None and worktree_path.exists():
+            _remove_git_worktree(target, worktree_path)
+        raise
     return run
 
 
@@ -262,3 +273,13 @@ def _create_git_worktree(target: Path, branch: str, worktree: Path, base_ref: st
     if result.returncode != 0:
         raise RunError(f"git worktree add failed: {result.stderr.strip()}")
 
+
+def _remove_git_worktree(target: Path, worktree: Path) -> None:
+    result = subprocess.run(
+        ["git", "-C", str(target), "worktree", "remove", "--force", str(worktree)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0 and worktree.exists():
+        shutil.rmtree(worktree)
