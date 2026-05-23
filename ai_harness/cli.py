@@ -7,6 +7,8 @@ from pathlib import Path
 from .connectors import render_connector_command
 from .dispatch import dispatch_plan
 from .executor import run_connector_command
+from .gates import run_pr_gate, run_validation_gate
+from .orchestrator import dispatch_run
 from .runs import create_run, render_pr_body
 from .scaffold import init_scaffold
 from .validation import validate_scaffold
@@ -79,6 +81,36 @@ def build_parser() -> argparse.ArgumentParser:
     run_connector_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per attempt.")
     run_connector_parser.add_argument("--retries", type=int, default=0, help="Retry count after failed attempts.")
 
+    validation_parser = subparsers.add_parser("validation-gate", help="Run or record validation gate results.")
+    validation_parser.add_argument("--target", default=".", help="Target repository root.")
+    validation_parser.add_argument("--run", required=True, help="Run id.")
+    validation_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per validation command.")
+    validation_parser.add_argument("--mode", choices=["run", "skip"], default="run", help="Validation mode.")
+
+    pr_gate_parser = subparsers.add_parser("pr-gate", help="Evaluate PR readiness gate for a run.")
+    pr_gate_parser.add_argument("--target", default=".", help="Target repository root.")
+    pr_gate_parser.add_argument("--run", required=True, help="Run id.")
+
+    dispatch_run_parser = subparsers.add_parser("dispatch-run", help="Dispatch, execute, validate, and gate a SchedulePlan.")
+    dispatch_run_parser.add_argument("--target", default=".", help="Target repository root.")
+    dispatch_run_parser.add_argument("--issue", required=True, help="Issue id, such as 123 or issue-123.")
+    dispatch_run_parser.add_argument("--plan", required=True, help="Path to SchedulePlan JSON.")
+    dispatch_run_parser.add_argument("--run-id", required=True, help="Schedule run id.")
+    dispatch_run_parser.add_argument("--base-ref", default="HEAD", help="Git base ref for worktree creation.")
+    dispatch_run_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per connector/validation attempt.")
+    dispatch_run_parser.add_argument("--retries", type=int, default=0, help="Retry count after failed connector attempts.")
+    dispatch_run_parser.add_argument(
+        "--validation-mode",
+        choices=["run", "skip"],
+        default="run",
+        help="Whether to run validation commands or mark them skipped.",
+    )
+    dispatch_run_parser.add_argument(
+        "--no-worktree",
+        action="store_true",
+        help="Prepare dispatch metadata without creating git worktrees.",
+    )
+
     return parser
 
 
@@ -143,6 +175,33 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"Connector run {execution['status']} for {args.run}")
             return 0 if execution["status"] == "succeeded" else 1
+        if args.command == "validation-gate":
+            gate = run_validation_gate(
+                target=target,
+                run_id=args.run,
+                timeout_seconds=args.timeout,
+                mode=args.mode,
+            )
+            print(f"Validation gate {gate['status']} for {args.run}")
+            return 0 if gate["status"] in {"passed", "skipped"} else 1
+        if args.command == "pr-gate":
+            gate = run_pr_gate(target=target, run_id=args.run)
+            print(f"PR gate {gate['status']} for {args.run}")
+            return 0 if gate["status"] in {"passed", "not_required"} else 1
+        if args.command == "dispatch-run":
+            summary = dispatch_run(
+                target=target,
+                issue=args.issue,
+                plan_path=Path(args.plan).expanduser().resolve(),
+                run_id=args.run_id,
+                timeout_seconds=args.timeout,
+                retries=args.retries,
+                validation_mode=args.validation_mode,
+                create_worktree=not args.no_worktree,
+                base_ref=args.base_ref,
+            )
+            print(f"Dispatch run {summary['status']} for {args.run_id}")
+            return 0 if summary["status"] == "succeeded" else 1
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

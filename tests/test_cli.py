@@ -305,6 +305,147 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(main(["run-connector", "--target", str(root), "--run", "run-exec-004", "--timeout", "5"]), 0)
             self.assertEqual((run_dir / "stdout.log").read_text().strip(), "workspace")
 
+    def test_validation_gate_runs_evidence_commands_and_updates_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_run(root, "run-gate-001")
+            evidence = {
+                "agent": {"agent_id": "backend-implementer"},
+                "issue": {"reference": "#123"},
+                "scope": "Gate test",
+                "validation": [
+                    {"command": f"{sys.executable} -c \"print('validation ok')\"", "status": "not_run"}
+                ],
+                "risk": "low",
+                "rollback": "revert",
+            }
+            (run_dir / "evidence.json").write_text(json.dumps(evidence))
+            self.assertEqual(main(["validation-gate", "--target", str(root), "--run", "run-gate-001", "--timeout", "5"]), 0)
+
+            gate = json.loads((run_dir / "validation_gate.json").read_text())
+            updated = json.loads((run_dir / "evidence.json").read_text())
+            self.assertEqual(gate["status"], "passed")
+            self.assertEqual(gate["results"][0]["exit_code"], 0)
+            self.assertIn("validation ok", gate["results"][0]["stdout"])
+            self.assertEqual(updated["validation"][0]["status"], "passed")
+
+    def test_validation_gate_runs_from_declared_workspace(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_run(root, "run-gate-workspace")
+            workspace = root / "workspace"
+            workspace.mkdir()
+            run = json.loads((run_dir / "run.json").read_text())
+            run["worktree"] = "workspace"
+            (run_dir / "run.json").write_text(json.dumps(run))
+            evidence = {
+                "agent": {"agent_id": "backend-implementer"},
+                "issue": {"reference": "#123"},
+                "scope": "Workspace gate test",
+                "validation": [
+                    {"command": f"{sys.executable} -c \"from pathlib import Path; print(Path.cwd().name)\""}
+                ],
+                "risk": "low",
+                "rollback": "revert",
+            }
+            (run_dir / "evidence.json").write_text(json.dumps(evidence))
+
+            self.assertEqual(main(["validation-gate", "--target", str(root), "--run", "run-gate-workspace", "--timeout", "5"]), 0)
+
+            gate = json.loads((run_dir / "validation_gate.json").read_text())
+            self.assertEqual(gate["results"][0]["stdout"].strip(), "workspace")
+
+    def test_pr_gate_renders_body_and_blocks_failed_validation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            task.write_text(json.dumps({"summary": "Add API"}))
+            main(
+                [
+                    "create-run",
+                    "--target",
+                    str(root),
+                    "--issue",
+                    "123",
+                    "--agent",
+                    "backend-implementer",
+                    "--task",
+                    str(task),
+                    "--run-id",
+                    "run-pr-gate-001",
+                    "--no-worktree",
+                ]
+            )
+            run_dir = root / ".ai" / "runs" / "run-pr-gate-001"
+            (run_dir / "connector_execution.json").write_text(json.dumps({"status": "succeeded"}))
+            (run_dir / "validation_gate.json").write_text(json.dumps({"status": "failed"}))
+            self.assertEqual(main(["pr-gate", "--target", str(root), "--run", "run-pr-gate-001"]), 1)
+
+            gate = json.loads((run_dir / "pr_gate.json").read_text())
+            self.assertEqual(gate["status"], "blocked")
+            self.assertIn("validation gate is failed", gate["reasons"])
+            self.assertTrue((run_dir / "pr-body.md").exists())
+
+    def test_dispatch_run_chains_connector_validation_and_pr_gate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            self._install_test_connector(root)
+            self._init_git_repo(root)
+            plan = root / "schedule_plan.json"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T3",
+                                "mode": "writer",
+                                "depends_on": [],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                                "success_criteria": ["Connector succeeds"],
+                            }
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+            self.assertEqual(
+                main(
+                    [
+                        "dispatch-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-dispatch-001",
+                        "--validation-mode",
+                        "skip",
+                        "--timeout",
+                        "5",
+                    ]
+                ),
+                0,
+            )
+
+            schedule_dir = root / ".ai" / "runs" / "run-dispatch-001"
+            child_dir = root / ".ai" / "runs" / "run-dispatch-001-T3-backend-implementer"
+            summary = json.loads((schedule_dir / "dispatch_run.json").read_text())
+            self.assertEqual(summary["status"], "succeeded")
+            self.assertEqual(summary["children"][0]["run_id"], "run-dispatch-001-T3-backend-implementer")
+            self.assertTrue((child_dir / "connector_command.json").exists())
+            self.assertEqual(json.loads((child_dir / "connector_execution.json").read_text())["status"], "succeeded")
+            self.assertEqual(json.loads((child_dir / "validation_gate.json").read_text())["status"], "skipped")
+            self.assertEqual(json.loads((child_dir / "pr_gate.json").read_text())["status"], "passed")
+            self.assertTrue((child_dir / "pr-body.md").exists())
+
     def test_dispatch_plan_targets_agent_identity_and_uses_private_binding(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -388,6 +529,47 @@ class HarnessCliTests(unittest.TestCase):
         )
         (run_dir / "trace.jsonl").write_text("")
         return run_dir
+
+    def _install_test_connector(self, root: Path) -> None:
+        connector = root / ".ai" / "connectors" / "test-cli.yml"
+        connector.write_text(
+            "\n".join(
+                [
+                    "id: test-cli",
+                    "version: 1",
+                    f"executable: {sys.executable}",
+                    "profiles:",
+                    "  test-profile:",
+                    "    mode: test",
+                    "command_templates:",
+                    (
+                        "  test-profile: "
+                        f"{sys.executable} -c \"import json; print(json.dumps({{'event':'agent_done'}}))\""
+                    ),
+                    "",
+                ]
+            )
+        )
+        assignments = root / ".ai" / "private" / "assignments.yml"
+        text = assignments.read_text()
+        text = text.replace(
+            "  backend-implementer:\n    connector: codex-cli\n    profile: writer-workspace\n",
+            "  backend-implementer:\n    connector: test-cli\n    profile: test-profile\n",
+        )
+        assignments.write_text(text)
+
+    def _init_git_repo(self, root: Path) -> None:
+        import subprocess
+
+        subprocess.run(["git", "init"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "add", "."], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "init"],
+            cwd=root,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
     def test_dispatch_plan_rejects_runtime_visible_to_scheduler(self):
         with tempfile.TemporaryDirectory() as temp:

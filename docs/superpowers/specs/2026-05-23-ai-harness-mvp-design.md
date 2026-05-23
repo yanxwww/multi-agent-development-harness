@@ -15,7 +15,7 @@ Every writing run has a single owner and must use an isolated workspace. Read-on
 
 ## MVP Scope
 
-The first version is a local CLI scaffold. It does not invoke Codex or Claude Code directly. It creates the repo contract that future CLI connectors will use.
+The first version is a local CLI scaffold. It creates the repo contract and deterministic connector execution path that Codex CLI, Claude Code CLI, or test connectors can use.
 
 The CLI provides:
 
@@ -25,9 +25,12 @@ The CLI provides:
 - `harness dispatch-plan` to validate a runtime-blind SchedulePlan and prepare deterministic AgentRun records through private connector bindings.
 - `harness connector-command` to render the Codex CLI or Claude Code CLI command for a prepared AgentRun without executing it.
 - `harness run-connector` to execute a rendered connector command with stdout/stderr capture, JSON event extraction, timeout, retry, and exit trace.
+- `harness validation-gate` to run or explicitly skip evidence validation commands and write validation gate artifacts.
+- `harness pr-gate` to render a PR body for writer runs and block runs missing connector, validation, evidence, or PR body requirements.
+- `harness dispatch-run` to chain `dispatch-plan -> connector-command -> run-connector -> validation-gate -> pr-gate` deterministically.
 - `harness pr-body` to render a PR body from run evidence.
 
-The MVP includes connector contract metadata for Codex CLI and Claude Code CLI, but execution is intentionally deferred. This keeps the architecture neutral and testable before integrating actual agent processes.
+The MVP includes connector contract metadata for Codex CLI and Claude Code CLI. Connector execution is mediated through rendered `connector_command.json` artifacts so the dispatcher remains deterministic, traceable, and testable.
 
 ## Repository Contract
 
@@ -106,6 +109,8 @@ The scheduler sees only agent identities and produces a `SchedulePlan`:
 
 The dispatcher sees `.ai/private/assignments.yml` and resolves `backend-implementer -> codex-cli / writer-workspace`. Connector, model, credentials, and CLI flags are not part of scheduler output.
 
+`dispatch-run` keeps this boundary intact. It first prepares child AgentRun records from the scheduler-visible plan, then the dispatcher privately renders and executes each connector command, records connector execution, runs validation, and evaluates PR readiness.
+
 ## Run Model
 
 An Agent Run is:
@@ -171,11 +176,23 @@ Future orchestrators can enforce the same state transitions.
 - schemas are valid JSON
 - `CLAUDE.md` is ignored instead of committed as canonical memory
 
+`harness validation-gate` checks run-level validation evidence:
+
+- every validation command has a pass/fail/skipped status
+- command stdout, stderr, exit code, and timeout status are recorded
+- `evidence.json` and `validation_gate.json` stay in sync
+
+`harness pr-gate` checks writer PR readiness:
+
+- evidence bundle exists
+- connector execution succeeded
+- validation passed or was explicitly skipped
+- PR body exists
+
 ## Non-Goals
 
 The MVP does not:
 
-- invoke Codex or Claude Code
 - create GitHub PRs
 - run CI
 - install skills into external agent environments

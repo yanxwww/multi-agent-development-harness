@@ -43,7 +43,7 @@ def render_connector_command(
         "workspace": shlex.quote(str(workspace_path)),
         "output_schema": shlex.quote(str(schema_path)),
     }
-    display = template.format(**values)
+    display = _render_template(template, values)
     command: dict[str, Any] = {
         "run_id": run_id,
         "agent_id": run.get("agent_id"),
@@ -59,3 +59,9 @@ def render_connector_command(
     output_path.write_text(json.dumps(command, indent=2) + "\n")
     return output_path
 
+
+def _render_template(template: str, values: dict[str, str]) -> str:
+    rendered = template
+    for key, value in values.items():
+        rendered = rendered.replace("{" + key + "}", value)
+    return rendered

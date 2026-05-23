@@ -21,6 +21,9 @@ python3 -m ai_harness pr-body --target . --run run-20260523-001
 python3 -m ai_harness dispatch-plan --target . --issue 123 --plan schedule_plan.json --run-id run-schedule-001 --no-worktree
 python3 -m ai_harness connector-command --target . --run run-20260523-001
 python3 -m ai_harness run-connector --target . --run run-20260523-001 --timeout 900 --retries 1
+python3 -m ai_harness validation-gate --target . --run run-20260523-001 --timeout 900
+python3 -m ai_harness pr-gate --target . --run run-20260523-001
+python3 -m ai_harness dispatch-run --target . --issue 123 --plan schedule_plan.json --run-id run-dispatch-001 --timeout 900 --retries 1
 ```
 
 Installable entry point:
@@ -52,6 +55,12 @@ The deterministic dispatcher validates the plan, resolves `agent_id -> connector
 
 `run-connector` executes `connector_command.json` with a per-attempt timeout and retry count. It writes `stdout.log`, `stderr.log`, per-attempt logs, `connector_events.jsonl` for JSON stdout lines, `connector_execution.json`, and trace events in `trace.jsonl`.
 
+`validation-gate` runs or explicitly skips the validation commands in `evidence.json`, writes `validation_gate.json`, updates validation status in the evidence bundle, and appends trace events.
+
+`pr-gate` renders `pr-body.md` for writer runs and blocks the run unless evidence, connector execution, validation status, and PR body requirements are satisfied.
+
+`dispatch-run` is the deterministic orchestration path. It calls `dispatch-plan`, renders each child run's `connector_command.json`, executes the connector with timeout/retry trace capture, runs the validation gate, then runs the PR body/gate check. The scheduler still targets only `agent_id`; connector selection remains private to the dispatcher.
+
 ## Current MVP Boundaries
 
-This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, renders deterministic connector commands, and can execute a rendered connector command with captured logs and trace. It does not open GitHub PRs, install skills into external runtimes, or enforce branch locks. Those belong in the next orchestration layer.
+This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, renders deterministic connector commands, executes connector commands with captured logs and trace, and gates writer runs through validation and PR body checks. It does not open GitHub PRs, install skills into external runtimes, or enforce branch locks. Those belong in the next orchestration layer.
