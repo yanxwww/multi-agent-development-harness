@@ -14,6 +14,9 @@ profiles:
   reviewer-readonly:
     mode: bare-print
     tools: Read,Grep,Glob
+  risk-approval-readonly:
+    mode: bare-print
+    tools: Read,Grep,Glob
   skill-writer:
     mode: bare-print
     tools: Read,Edit,Bash,Grep,Glob
@@ -25,5 +28,6 @@ command_templates:
   planner: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
   writer-workspace: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
   reviewer-readonly: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
+  risk-approval-readonly: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
   skill-writer: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
   release-readonly: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}

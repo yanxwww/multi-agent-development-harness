@@ -26,6 +26,11 @@ The scheduler must output only agent identities, tasks, dependencies, expected o
 
 The deterministic dispatcher resolves `agent_id -> connector profile`, creates worktrees and branches, records traces, validates schemas, runs gates, and prepares pull request evidence.
 
+## Automated Risk Approval
+
+High-risk writer runs are approved or rejected by `risk-approval-agent` through `risk_approval.json` and `risk-approval-gate`.
+The merge gate relies on agentic approval by default.
+
 ## Workspace Isolation
 
 Every writer agent run must work in its own git worktree and branch.

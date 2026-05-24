@@ -37,6 +37,7 @@ The CLI provides:
 - `harness ci-eval-gate` to evaluate run-local CI and eval result artifacts.
 - `harness review-gate` to block unresolved blocking or major review findings.
 - `harness writer-lock` and `harness writer-transfer` to enforce single branch writer ownership and audited repair handoff.
+- `harness risk-approval-gate` to validate autonomous high-risk approval from `risk-approval-agent`.
 - `harness merge-gate` to evaluate merge readiness without merging.
 - `harness skill-evolution-plan` to recommend a dedicated skill-curator writer PR from repeated feedback patterns.
 
@@ -176,8 +177,10 @@ Each stage writes a run-local artifact and trace event so branch publication can
 After publication, lifecycle gates evaluate PR readiness without giving AI agents direct merge authority:
 
 ```text
-ci-eval-gate -> review-gate -> writer-lock -> merge-gate
+ci-eval-gate -> review-gate -> writer-lock -> risk-approval-gate when high risk -> merge-gate
 ```
+
+`risk-approval-agent` is the autonomous continuous approver for high-risk runs. It produces `risk_approval.json`, and the deterministic `risk-approval-gate` validates that decision before high-risk merge readiness can pass.
 
 `writer-transfer` supports controlled repair ownership transfer for the same branch. `skill-evolution-plan` converts repeated findings into a runtime-blind SchedulePlan for `skill-curator`, which must produce its own writer run and Skill Update PR.
 
@@ -282,7 +285,7 @@ Command execution hardening:
 - CI/Eval gate passed
 - review gate passed
 - current writer lock owner matches the run
-- high-risk runs include explicit human approval
+- high-risk runs include a passed autonomous risk approval gate
 
 `harness skill-evolution-plan` checks feedback mining readiness:
 

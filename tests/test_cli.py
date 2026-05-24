@@ -18,6 +18,7 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue((root / ".ai" / "private" / "assignments.yml").exists())
             self.assertTrue((root / ".ai" / "locks" / "branches").exists())
             self.assertTrue((root / ".ai" / "agents" / "scheduler-agent.md").exists())
+            self.assertTrue((root / ".ai" / "agents" / "risk-approval-agent.md").exists())
             self.assertTrue((root / ".ai" / "schemas" / "schedule_plan.schema.json").exists())
             self.assertTrue((root / ".claude" / "settings.json").exists())
             self.assertIn("CLAUDE.md", (root / ".gitignore").read_text())
@@ -30,10 +31,12 @@ class HarnessCliTests(unittest.TestCase):
             catalog = (root / ".ai" / "agent-catalog.yml").read_text()
             private = (root / ".ai" / "private" / "assignments.yml").read_text()
             self.assertIn("backend-implementer:", catalog)
+            self.assertIn("risk-approval-agent:", catalog)
             self.assertNotIn("codex-cli", catalog)
             self.assertNotIn("claude-code-cli", catalog)
             self.assertIn("connector: codex-cli", private)
             self.assertIn("connector: claude-code-cli", private)
+            self.assertIn("profile: risk-approval-readonly", private)
 
     def test_validate_accepts_fresh_scaffold(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -655,7 +658,48 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(main(["writer-lock", "--target", str(root), "--run", "run-owner-001"]), 1)
             self.assertEqual(main(["writer-lock", "--target", str(root), "--run", "run-repair-001"]), 0)
 
-    def test_merge_gate_requires_lifecycle_gates_lock_and_human_approval_for_high_risk(self):
+    def test_risk_approval_gate_requires_autonomous_approval_agent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-risk-approval-001", risk_level="high")
+
+            self.assertEqual(main(["risk-approval-gate", "--target", str(root), "--run", "run-risk-approval-001"]), 1)
+            gate = json.loads((run_dir / "risk_approval_gate.json").read_text())
+            self.assertEqual(gate["status"], "blocked")
+            self.assertIn("risk approval is missing", gate["reasons"])
+
+            (run_dir / "risk_approval.json").write_text(
+                json.dumps(
+                    {
+                        "status": "rejected",
+                        "approver_agent_id": "risk-approval-agent",
+                        "source_run_id": "run-risk-approval-001",
+                        "risk_level": "high",
+                        "rationale": "Policy risk remains unresolved.",
+                    }
+                )
+            )
+            self.assertEqual(main(["risk-approval-gate", "--target", str(root), "--run", "run-risk-approval-001"]), 1)
+            gate = json.loads((run_dir / "risk_approval_gate.json").read_text())
+            self.assertIn("risk approval status is rejected", gate["reasons"])
+
+            (run_dir / "risk_approval.json").write_text(
+                json.dumps(
+                    {
+                        "status": "approved",
+                        "approver_agent_id": "risk-approval-agent",
+                        "source_run_id": "run-risk-approval-001",
+                        "risk_level": "high",
+                        "rationale": "Autonomous policy review passed.",
+                    }
+                )
+            )
+            self.assertEqual(main(["risk-approval-gate", "--target", str(root), "--run", "run-risk-approval-001"]), 0)
+            gate = json.loads((run_dir / "risk_approval_gate.json").read_text())
+            self.assertEqual(gate["status"], "passed")
+            self.assertEqual(gate["approver_agent_id"], "risk-approval-agent")
+
+    def test_merge_gate_requires_lifecycle_gates_lock_and_agent_risk_approval_for_high_risk(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             run_dir = self._make_manual_writer_run(root, "run-merge-001", risk_level="high")
@@ -671,9 +715,21 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(main(["writer-lock", "--target", str(root), "--run", "run-merge-001"]), 0)
             self.assertEqual(main(["merge-gate", "--target", str(root), "--run", "run-merge-001"]), 1)
             gate = json.loads((run_dir / "merge_gate.json").read_text())
-            self.assertIn("human approval is required for high risk", gate["reasons"])
+            self.assertIn("risk approval gate is missing", gate["reasons"])
 
-            self.assertEqual(main(["merge-gate", "--target", str(root), "--run", "run-merge-001", "--human-approved"]), 0)
+            (run_dir / "risk_approval.json").write_text(
+                json.dumps(
+                    {
+                        "status": "approved",
+                        "approver_agent_id": "risk-approval-agent",
+                        "source_run_id": "run-merge-001",
+                        "risk_level": "high",
+                        "rationale": "Autonomous policy review passed.",
+                    }
+                )
+            )
+            self.assertEqual(main(["risk-approval-gate", "--target", str(root), "--run", "run-merge-001"]), 0)
+            self.assertEqual(main(["merge-gate", "--target", str(root), "--run", "run-merge-001"]), 0)
             gate = json.loads((run_dir / "merge_gate.json").read_text())
             self.assertEqual(gate["status"], "passed")
             self.assertTrue(gate["merge_ready"])
@@ -1360,6 +1416,55 @@ class HarnessCliTests(unittest.TestCase):
             child = root / ".ai" / "runs" / "run-schedule-001-T3-backend-implementer" / "run.json"
             self.assertEqual(json.loads(child.read_text())["agent_id"], "backend-implementer")
 
+    def test_dispatch_plan_can_target_risk_approval_agent_without_runtime_visibility(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plan = root / "risk_approval_schedule_plan.json"
+            main(["init", "--target", str(root)])
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "risk-approval-agent",
+                                "task_id": "T-risk",
+                                "mode": "read_only",
+                                "depends_on": [],
+                                "expected_output": "risk_approval",
+                                "requires_pr": False,
+                                "risk_level": "high",
+                                "success_criteria": ["High-risk approval decision is structured"],
+                            }
+                        ],
+                        "blocked": [],
+                        "risk_notes": ["High-risk merge must be approved by risk-approval-agent."],
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "dispatch-plan",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-risk-schedule-001",
+                        "--no-worktree",
+                    ]
+                ),
+                0,
+            )
+            schedule_dir = root / ".ai" / "runs" / "run-risk-schedule-001"
+            entry = json.loads((schedule_dir / "dispatch_log.jsonl").read_text().splitlines()[0])
+            self.assertEqual(entry["agent_id"], "risk-approval-agent")
+            self.assertEqual(entry["connector"], "claude-code-cli")
+            self.assertEqual(entry["connector_profile"], "risk-approval-readonly")
+
     def _make_manual_run(self, root: Path, run_id: str) -> Path:
         main(["init", "--target", str(root)])
         run_dir = root / ".ai" / "runs" / run_id
@@ -1489,6 +1594,7 @@ class HarnessCliTests(unittest.TestCase):
         text = text.replace("profile: qa-workspace", "profile: test-profile")
         text = text.replace("profile: skill-writer", "profile: test-profile")
         text = text.replace("profile: release-readonly", "profile: test-profile")
+        text = text.replace("profile: risk-approval-readonly", "profile: test-profile")
         assignments.write_text(text)
 
     def _init_git_repo(self, root: Path) -> None:

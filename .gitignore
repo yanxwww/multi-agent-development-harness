@@ -6,3 +6,5 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ai/private/*.local.yml
+.ai/locks/branches/*
+!.ai/locks/branches/.gitkeep

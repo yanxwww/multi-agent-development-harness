@@ -20,6 +20,7 @@ from .lifecycle import (
     render_skill_evolution_plan,
     run_ci_eval_gate,
     run_merge_gate,
+    run_risk_approval_gate,
     run_review_gate,
     transfer_writer_lock,
 )
@@ -151,6 +152,13 @@ def build_parser() -> argparse.ArgumentParser:
     review_gate_parser.add_argument("--target", default=".", help="Target repository root.")
     review_gate_parser.add_argument("--run", required=True, help="Run id.")
 
+    risk_approval_gate_parser = subparsers.add_parser(
+        "risk-approval-gate",
+        help="Evaluate autonomous high-risk approval for a run.",
+    )
+    risk_approval_gate_parser.add_argument("--target", default=".", help="Target repository root.")
+    risk_approval_gate_parser.add_argument("--run", required=True, help="Run id.")
+
     writer_lock_parser = subparsers.add_parser("writer-lock", help="Acquire the branch writer lock for a writer run.")
     writer_lock_parser.add_argument("--target", default=".", help="Target repository root.")
     writer_lock_parser.add_argument("--run", required=True, help="Run id.")
@@ -164,7 +172,6 @@ def build_parser() -> argparse.ArgumentParser:
     merge_gate_parser = subparsers.add_parser("merge-gate", help="Evaluate merge readiness without merging.")
     merge_gate_parser.add_argument("--target", default=".", help="Target repository root.")
     merge_gate_parser.add_argument("--run", required=True, help="Run id.")
-    merge_gate_parser.add_argument("--human-approved", action="store_true", help="Record human approval for high-risk runs.")
 
     skill_evolution_parser = subparsers.add_parser("skill-evolution-plan", help="Recommend skill-curator work from repeated findings.")
     skill_evolution_parser.add_argument("--target", default=".", help="Target repository root.")
@@ -323,6 +330,10 @@ def main(argv: list[str] | None = None) -> int:
             gate = run_review_gate(target=target, run_id=args.run)
             print(f"Review gate {gate['status']} for {args.run}")
             return 0 if gate["status"] == "passed" else 1
+        if args.command == "risk-approval-gate":
+            gate = run_risk_approval_gate(target=target, run_id=args.run)
+            print(f"Risk approval gate {gate['status']} for {args.run}")
+            return 0 if gate["status"] in {"passed", "not_required"} else 1
         if args.command == "writer-lock":
             lock = acquire_writer_lock(target=target, run_id=args.run)
             print(f"Writer lock owned by {lock['owner_run_id']} for {args.run}")
@@ -337,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Writer lock transferred to {lock['owner_run_id']}")
             return 0
         if args.command == "merge-gate":
-            gate = run_merge_gate(target=target, run_id=args.run, human_approved=args.human_approved)
+            gate = run_merge_gate(target=target, run_id=args.run)
             print(f"Merge gate {gate['status']} for {args.run}")
             return 0 if gate["status"] == "passed" else 1
         if args.command == "skill-evolution-plan":

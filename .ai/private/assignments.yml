@@ -21,6 +21,9 @@ bindings:
   security-reviewer:
     connector: claude-code-cli
     profile: reviewer-readonly
+  risk-approval-agent:
+    connector: claude-code-cli
+    profile: risk-approval-readonly
   pr-reviewer:
     connector: claude-code-cli
     profile: reviewer-readonly

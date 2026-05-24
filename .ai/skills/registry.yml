@@ -14,6 +14,8 @@ skills:
     description: Reproduce behavior and add tests when assigned as writer.
   security-review:
     description: Review authentication, authorization, secrets, and data risks.
+  risk-approval:
+    description: Produce autonomous high-risk approval or rejection decisions for merge gates.
   pr-reviewer:
     description: Produce structured pull request findings.
   ci-failure-repair:

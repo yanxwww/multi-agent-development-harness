@@ -51,7 +51,8 @@
               "review_findings",
               "test_report",
               "skill_update_pr",
-              "schedule_plan"
+              "schedule_plan",
+              "risk_approval"
             ]
           },
           "requires_pr": {

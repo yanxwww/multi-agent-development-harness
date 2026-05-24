@@ -1,5 +1,5 @@
 version: 1
-human_gate_required:
+autonomous_risk_approval_required:
   - secrets
   - production data
   - authentication

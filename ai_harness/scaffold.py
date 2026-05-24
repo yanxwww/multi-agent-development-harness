@@ -203,6 +203,43 @@ Review security risks and produce structured findings.
 - push commits
 - approve its own implementation
 """,
+    "risk-approval-agent": """---
+id: risk-approval-agent
+type: read-only
+version: 1
+default_pr_policy: none
+allowed_skills:
+  - risk-approval
+---
+# Risk Approval Agent
+
+## Mission
+
+Continuously evaluate high-risk writer runs after CI/Eval and review gates, then produce an autonomous approval decision for merge gating.
+
+## Inputs
+
+- run metadata
+- PR evidence bundle
+- CI/Eval gate result
+- review gate result
+- security policy
+- merge policy
+- trace summary
+
+## Outputs
+
+- `risk_approval.json`
+
+## Must Not
+
+- modify repository files
+- create branches
+- open pull requests
+- choose runtime bindings
+- bypass deterministic gates
+- approve its own implementation
+""",
     "pr-reviewer": """---
 id: pr-reviewer
 type: read-only
@@ -385,6 +422,11 @@ The scheduler must output only agent identities, tasks, dependencies, expected o
 
 The deterministic dispatcher resolves `agent_id -> connector profile`, creates worktrees and branches, records traces, validates schemas, runs gates, and prepares pull request evidence.
 
+## Automated Risk Approval
+
+High-risk writer runs are approved or rejected by `risk-approval-agent` through `risk_approval.json` and `risk-approval-gate`.
+The merge gate relies on agentic approval by default.
+
 ## Workspace Isolation
 
 Every writer agent run must work in its own git worktree and branch.
@@ -484,6 +526,12 @@ agents:
     outputs:
       - security_findings
     can_write_repo: false
+  risk-approval-agent:
+    type: read-only
+    purpose: Continuously approve or reject high-risk merge candidates through structured policy decisions.
+    outputs:
+      - risk_approval
+    can_write_repo: false
   pr-reviewer:
     type: read-only
     purpose: Review PR diffs and produce structured findings.
@@ -538,6 +586,9 @@ bindings:
   security-reviewer:
     connector: claude-code-cli
     profile: reviewer-readonly
+  risk-approval-agent:
+    connector: claude-code-cli
+    profile: risk-approval-readonly
   pr-reviewer:
     connector: claude-code-cli
     profile: reviewer-readonly
@@ -591,6 +642,9 @@ profiles:
   reviewer-readonly:
     mode: bare-print
     tools: Read,Grep,Glob
+  risk-approval-readonly:
+    mode: bare-print
+    tools: Read,Grep,Glob
   skill-writer:
     mode: bare-print
     tools: Read,Edit,Bash,Grep,Glob
@@ -602,6 +656,7 @@ command_templates:
   planner: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
   writer-workspace: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
   reviewer-readonly: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
+  risk-approval-readonly: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
   skill-writer: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
   release-readonly: claude --bare -p --append-system-prompt-file AGENTS.md --output-format json --json-schema {output_schema}
 """,
@@ -623,6 +678,8 @@ skills:
     description: Reproduce behavior and add tests when assigned as writer.
   security-review:
     description: Review authentication, authorization, secrets, and data risks.
+  risk-approval:
+    description: Produce autonomous high-risk approval or rejection decisions for merge gates.
   pr-reviewer:
     description: Produce structured pull request findings.
   ci-failure-repair:
@@ -706,7 +763,7 @@ reviewer_must_check:
   - rollback plan is credible
 """,
     "security-policy": """version: 1
-human_gate_required:
+autonomous_risk_approval_required:
   - secrets
   - production data
   - authentication
@@ -720,7 +777,7 @@ minimum_requirements:
   - ci passes
   - eval passes
   - no blocking review findings
-  - human gate not required
+  - high-risk approval gate passes when risk is high
 """,
     "permission-boundaries": """version: 1
 hard_denies:
@@ -799,6 +856,7 @@ SCHEMAS = {
                                 "test_report",
                                 "skill_update_pr",
                                 "schedule_plan",
+                                "risk_approval",
                             ],
                         },
                         "requires_pr": {"type": "boolean"},
@@ -888,6 +946,20 @@ SCHEMAS = {
             "file": {"type": "string"},
             "line": {"type": "integer"},
             "body": {"type": "string"},
+        },
+    },
+    "risk_approval": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["status", "approver_agent_id", "source_run_id", "risk_level", "rationale"],
+        "additionalProperties": False,
+        "properties": {
+            "status": {"enum": ["approved", "rejected"]},
+            "approver_agent_id": {"const": "risk-approval-agent"},
+            "source_run_id": {"type": "string"},
+            "risk_level": {"enum": ["low", "medium", "high"]},
+            "rationale": {"type": "string"},
+            "conditions": {"type": "array", "items": {"type": "string"}},
         },
     },
     "skill_patch": {

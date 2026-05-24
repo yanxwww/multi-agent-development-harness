@@ -35,6 +35,7 @@ EXPECTED_OUTPUTS = {
     "test_report",
     "skill_update_pr",
     "schedule_plan",
+    "risk_approval",
 }
 RISK_LEVELS = {"low", "medium", "high"}
 MODES = {"read_only", "writer"}

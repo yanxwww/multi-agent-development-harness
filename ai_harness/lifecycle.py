@@ -13,6 +13,7 @@ class LifecycleError(Exception):
 
 
 RESOLVED_FINDING_STATUSES = {"resolved", "fixed", "rejected-with-reason", "closed"}
+RISK_APPROVER_AGENT_ID = "risk-approval-agent"
 
 
 def run_ci_eval_gate(target: Path, run_id: str) -> dict[str, Any]:
@@ -86,6 +87,63 @@ def run_review_gate(target: Path, run_id: str) -> dict[str, Any]:
     }
     (run_dir / "review_gate.json").write_text(json.dumps(gate, indent=2) + "\n")
     _append_trace(run_dir, {"event": "review_gate_finished", "run_id": run_id, "status": gate["status"]})
+    return gate
+
+
+def run_risk_approval_gate(target: Path, run_id: str) -> dict[str, Any]:
+    run_dir = _run_dir(target, run_id)
+    run = _load_writer_run(run_dir, run_id)
+    risk_level = str(run.get("risk_level", "medium"))
+    approval = _load_optional_json(run_dir / "risk_approval.json")
+    reasons: list[str] = []
+    approval_status = "missing"
+    approver_agent_id = None
+
+    if risk_level != "high":
+        gate = {
+            "run_id": run_id,
+            "status": "not_required",
+            "reasons": [],
+            "risk_level": risk_level,
+            "approval_status": "not_required",
+            "approver_agent_id": None,
+            "created_at": _now(),
+        }
+        (run_dir / "risk_approval_gate.json").write_text(json.dumps(gate, indent=2) + "\n")
+        _append_trace(run_dir, {"event": "risk_approval_gate_finished", "run_id": run_id, "status": gate["status"]})
+        return gate
+
+    if not approval:
+        reasons.append("risk approval is missing")
+    elif not isinstance(approval, dict):
+        reasons.append("risk approval must be an object")
+    else:
+        approval_status = str(approval.get("status", "missing"))
+        approver_agent_id = approval.get("approver_agent_id")
+        if approval_status != "approved":
+            reasons.append(f"risk approval status is {approval_status}")
+        if approver_agent_id != RISK_APPROVER_AGENT_ID:
+            reasons.append(f"risk approval approver must be {RISK_APPROVER_AGENT_ID}")
+        if approval.get("source_run_id") != run_id:
+            reasons.append("risk approval source_run_id does not match run")
+        approval_risk_level = str(approval.get("risk_level", "missing"))
+        if approval_risk_level != risk_level:
+            reasons.append(f"risk approval risk_level is {approval_risk_level}")
+        rationale = approval.get("rationale")
+        if not isinstance(rationale, str) or not rationale.strip():
+            reasons.append("risk approval rationale is missing")
+
+    gate = {
+        "run_id": run_id,
+        "status": "passed" if not reasons else "blocked",
+        "reasons": reasons,
+        "risk_level": risk_level,
+        "approval_status": approval_status,
+        "approver_agent_id": approver_agent_id,
+        "created_at": _now(),
+    }
+    (run_dir / "risk_approval_gate.json").write_text(json.dumps(gate, indent=2) + "\n")
+    _append_trace(run_dir, {"event": "risk_approval_gate_finished", "run_id": run_id, "status": gate["status"]})
     return gate
 
 
@@ -169,7 +227,7 @@ def transfer_writer_lock(target: Path, from_run_id: str, to_run_id: str, reason:
     return lock
 
 
-def run_merge_gate(target: Path, run_id: str, human_approved: bool = False) -> dict[str, Any]:
+def run_merge_gate(target: Path, run_id: str) -> dict[str, Any]:
     run_dir = _run_dir(target, run_id)
     run = _load_writer_run(run_dir, run_id)
     branch = _run_branch(run, run_id)
@@ -187,8 +245,8 @@ def run_merge_gate(target: Path, run_id: str, human_approved: bool = False) -> d
         reasons.append(f"writer lock is owned by {lock.get('owner_run_id', 'unknown')}")
 
     risk_level = str(run.get("risk_level", "medium"))
-    if risk_level == "high" and not human_approved:
-        reasons.append("human approval is required for high risk")
+    if risk_level == "high":
+        _require_artifact_status(run_dir, "risk_approval_gate.json", "risk approval gate", {"passed"}, reasons)
 
     gate = {
         "run_id": run_id,
@@ -198,7 +256,7 @@ def run_merge_gate(target: Path, run_id: str, human_approved: bool = False) -> d
         "branch": branch,
         "owner_run_id": lock.get("owner_run_id") if lock else None,
         "risk_level": risk_level,
-        "human_approved": human_approved,
+        "risk_approval_required": risk_level == "high",
         "created_at": _now(),
     }
     (run_dir / "merge_gate.json").write_text(json.dumps(gate, indent=2) + "\n")

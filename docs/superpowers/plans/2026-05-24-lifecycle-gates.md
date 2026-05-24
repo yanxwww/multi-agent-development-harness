@@ -18,7 +18,7 @@
 - [x] Add tests for `ci-eval-gate` pass/fail behavior.
 - [x] Add tests for `review-gate` unresolved blocking/major findings.
 - [x] Add tests for `writer-lock` and `writer-transfer` branch ownership.
-- [x] Add tests for `merge-gate` requiring push, PR gate, CI/Eval, review, current lock owner, and high-risk human approval.
+- [x] Add tests for `merge-gate` requiring push, PR gate, CI/Eval, review, current lock owner, and high-risk autonomous approval.
 - [x] Add tests for `skill-evolution-plan` generating a skill-curator SchedulePlan from repeated feedback patterns.
 
 ### Task 2: Lifecycle Gate Implementation

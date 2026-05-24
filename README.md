@@ -34,7 +34,8 @@ python3 -m ai_harness ci-eval-gate --target . --run run-20260523-001
 python3 -m ai_harness review-gate --target . --run run-20260523-001
 python3 -m ai_harness writer-lock --target . --run run-20260523-001
 python3 -m ai_harness writer-transfer --target . --from-run run-20260523-001 --to-run run-repair-001 --reason "CI repair"
-python3 -m ai_harness merge-gate --target . --run run-20260523-001 --human-approved
+python3 -m ai_harness risk-approval-gate --target . --run run-20260523-001
+python3 -m ai_harness merge-gate --target . --run run-20260523-001
 python3 -m ai_harness skill-evolution-plan --target . --source-run run-20260523-001 --run-id run-skill-evolution-001
 python3 -m ai_harness dispatch-run --target . --issue 123 --plan schedule_plan.json --run-id run-dispatch-001 --timeout 900 --retries 1 --commit-and-push --push-remote origin --prepare-pr-command --pr-base main --draft-pr
 ```
@@ -92,10 +93,12 @@ The deterministic dispatcher validates the plan, resolves `agent_id -> connector
 
 `writer-lock` creates or confirms the single current branch owner lock under `.ai/locks/branches/` and mirrors it into the run as `writer_lock.json`. `writer-transfer` moves that lock from the current owner run to a repair run with a required reason and trace entries.
 
-`merge-gate` evaluates merge readiness without merging. It requires PR gate, pushed branch, CI/Eval gate, review gate, current writer ownership, and human approval for high-risk runs, then writes `merge_gate.json`.
+`risk-approval-agent` is the autonomous continuous approver for high-risk runs. It produces `risk_approval.json`; `risk-approval-gate` validates that decision and writes `risk_approval_gate.json`.
+
+`merge-gate` evaluates merge readiness without merging. It requires PR gate, pushed branch, CI/Eval gate, review gate, current writer ownership, and a passed risk approval gate when the run risk is high, then writes `merge_gate.json`.
 
 `skill-evolution-plan` mines repeated review finding patterns from a source run and writes both `skill_evolution_plan.json` and a runtime-blind `skill_evolution_schedule_plan.json` that dispatches `skill-curator` for a dedicated Skill Update PR.
 
 ## Current MVP Boundaries
 
-This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, renders deterministic connector/git/PR commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation, PR body, diff, commit, push, CI/Eval result artifacts, review findings, branch ownership, merge readiness, and skill evolution planning. It does not yet run hosted CI itself, install skills into external runtimes, execute merges, or manage stacked/integration PRs. Those belong in the next orchestration layer.
+This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, renders deterministic connector/git/PR commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation, PR body, diff, commit, push, CI/Eval result artifacts, review findings, branch ownership, autonomous high-risk approval, merge readiness, and skill evolution planning. It does not yet run hosted CI itself, install skills into external runtimes, execute merges, or manage stacked/integration PRs. Those belong in the next orchestration layer.

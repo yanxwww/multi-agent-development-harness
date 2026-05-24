@@ -4,4 +4,4 @@ minimum_requirements:
   - ci passes
   - eval passes
   - no blocking review findings
-  - human gate not required
+  - high-risk approval gate passes when risk is high

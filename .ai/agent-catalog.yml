@@ -60,6 +60,12 @@ agents:
     outputs:
       - security_findings
     can_write_repo: false
+  risk-approval-agent:
+    type: read-only
+    purpose: Continuously approve or reject high-risk merge candidates through structured policy decisions.
+    outputs:
+      - risk_approval
+    can_write_repo: false
   pr-reviewer:
     type: read-only
     purpose: Review PR diffs and produce structured findings.
