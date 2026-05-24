@@ -293,6 +293,7 @@ def init_scaffold(target: Path, force: bool = False) -> None:
         ".ai/rules",
         ".ai/schemas",
         ".ai/runs",
+        ".ai/locks/branches",
         ".agents/skills",
         ".claude/skills",
         "docs/architecture",
@@ -324,7 +325,7 @@ def init_scaffold(target: Path, force: bool = False) -> None:
     for schema_name, schema in SCHEMAS.items():
         _write(target / ".ai" / "schemas" / f"{schema_name}.schema.json", json.dumps(schema, indent=2) + "\n", force)
 
-    for keep in [".ai/runs/.gitkeep", ".agents/skills/.gitkeep", ".claude/skills/.gitkeep"]:
+    for keep in [".ai/runs/.gitkeep", ".ai/locks/branches/.gitkeep", ".agents/skills/.gitkeep", ".claude/skills/.gitkeep"]:
         _write(target / keep, "", force=False)
 
 
@@ -341,6 +342,8 @@ def _merge_gitignore(path: Path) -> None:
         "CLAUDE.md",
         ".ai/runs/*",
         "!.ai/runs/.gitkeep",
+        ".ai/locks/branches/*",
+        "!.ai/locks/branches/.gitkeep",
         ".ai/private/*.local.yml",
         "__pycache__/",
         "*.pyc",

@@ -16,6 +16,7 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue((root / ".ai" / "harness.yml").exists())
             self.assertTrue((root / ".ai" / "agent-catalog.yml").exists())
             self.assertTrue((root / ".ai" / "private" / "assignments.yml").exists())
+            self.assertTrue((root / ".ai" / "locks" / "branches").exists())
             self.assertTrue((root / ".ai" / "agents" / "scheduler-agent.md").exists())
             self.assertTrue((root / ".ai" / "schemas" / "schedule_plan.schema.json").exists())
             self.assertTrue((root / ".claude" / "settings.json").exists())
@@ -573,6 +574,142 @@ class HarnessCliTests(unittest.TestCase):
             trace = (run_dir / "trace.jsonl").read_text()
             self.assertIn("pr_command_started", trace)
             self.assertIn("pr_command_finished", trace)
+
+    def test_ci_eval_gate_blocks_missing_or_failed_results_and_passes_green_results(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-ci-eval-001")
+
+            self.assertEqual(main(["ci-eval-gate", "--target", str(root), "--run", "run-ci-eval-001"]), 1)
+            gate = json.loads((run_dir / "ci_eval_gate.json").read_text())
+            self.assertEqual(gate["status"], "blocked")
+            self.assertIn("CI results are missing", gate["reasons"])
+            self.assertIn("Eval results are missing", gate["reasons"])
+
+            (run_dir / "ci_results.json").write_text(json.dumps({"status": "passed", "checks": [{"name": "unit", "status": "passed"}]}))
+            (run_dir / "eval_results.json").write_text(json.dumps({"status": "failed", "checks": [{"name": "quality", "status": "failed"}]}))
+            self.assertEqual(main(["ci-eval-gate", "--target", str(root), "--run", "run-ci-eval-001"]), 1)
+            gate = json.loads((run_dir / "ci_eval_gate.json").read_text())
+            self.assertIn("Eval results status is failed", gate["reasons"])
+
+            (run_dir / "eval_results.json").write_text(json.dumps({"status": "passed", "checks": [{"name": "quality", "status": "passed"}]}))
+            self.assertEqual(main(["ci-eval-gate", "--target", str(root), "--run", "run-ci-eval-001"]), 0)
+            gate = json.loads((run_dir / "ci_eval_gate.json").read_text())
+            self.assertEqual(gate["status"], "passed")
+
+    def test_review_gate_blocks_unresolved_blocking_or_major_findings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-review-gate-001")
+            findings = {
+                "findings": [
+                    {"id": "F1", "severity": "blocking", "status": "open", "body": "Fix auth bypass"},
+                    {"id": "F2", "severity": "minor", "status": "open", "body": "Rename local"},
+                ]
+            }
+            (run_dir / "review_findings.json").write_text(json.dumps(findings))
+
+            self.assertEqual(main(["review-gate", "--target", str(root), "--run", "run-review-gate-001"]), 1)
+            gate = json.loads((run_dir / "review_gate.json").read_text())
+            self.assertEqual(gate["status"], "blocked")
+            self.assertEqual(gate["unresolved_blocking_findings"], ["F1"])
+
+            findings["findings"][0]["status"] = "resolved"
+            (run_dir / "review_findings.json").write_text(json.dumps(findings))
+            self.assertEqual(main(["review-gate", "--target", str(root), "--run", "run-review-gate-001"]), 0)
+            gate = json.loads((run_dir / "review_gate.json").read_text())
+            self.assertEqual(gate["status"], "passed")
+            self.assertEqual(gate["open_nonblocking_findings"], ["F2"])
+
+    def test_writer_lock_and_owner_transfer_enforce_single_current_owner(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            branch = "ai/issue-123/backend-implementer/run-owner-001"
+            owner_dir = self._make_manual_writer_run(root, "run-owner-001", branch=branch)
+            repair_dir = self._make_manual_writer_run(root, "run-repair-001", branch=branch, agent_id="ci-repair-agent")
+
+            self.assertEqual(main(["writer-lock", "--target", str(root), "--run", "run-owner-001"]), 0)
+            owner_lock = json.loads((owner_dir / "writer_lock.json").read_text())
+            self.assertEqual(owner_lock["owner_run_id"], "run-owner-001")
+            self.assertEqual(main(["writer-lock", "--target", str(root), "--run", "run-repair-001"]), 1)
+
+            self.assertEqual(
+                main(
+                    [
+                        "writer-transfer",
+                        "--target",
+                        str(root),
+                        "--from-run",
+                        "run-owner-001",
+                        "--to-run",
+                        "run-repair-001",
+                        "--reason",
+                        "CI repair owner transfer",
+                    ]
+                ),
+                0,
+            )
+            lock = json.loads((repair_dir / "writer_lock.json").read_text())
+            self.assertEqual(lock["owner_run_id"], "run-repair-001")
+            self.assertEqual(len(lock["history"]), 2)
+            self.assertEqual(main(["writer-lock", "--target", str(root), "--run", "run-owner-001"]), 1)
+            self.assertEqual(main(["writer-lock", "--target", str(root), "--run", "run-repair-001"]), 0)
+
+    def test_merge_gate_requires_lifecycle_gates_lock_and_human_approval_for_high_risk(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-merge-001", risk_level="high")
+            (run_dir / "pr_gate.json").write_text(json.dumps({"status": "passed"}))
+            (run_dir / "push_execution.json").write_text(json.dumps({"status": "succeeded"}))
+            (run_dir / "ci_eval_gate.json").write_text(json.dumps({"status": "passed"}))
+            (run_dir / "review_gate.json").write_text(json.dumps({"status": "passed"}))
+
+            self.assertEqual(main(["merge-gate", "--target", str(root), "--run", "run-merge-001"]), 1)
+            gate = json.loads((run_dir / "merge_gate.json").read_text())
+            self.assertIn("writer lock is missing", gate["reasons"])
+
+            self.assertEqual(main(["writer-lock", "--target", str(root), "--run", "run-merge-001"]), 0)
+            self.assertEqual(main(["merge-gate", "--target", str(root), "--run", "run-merge-001"]), 1)
+            gate = json.loads((run_dir / "merge_gate.json").read_text())
+            self.assertIn("human approval is required for high risk", gate["reasons"])
+
+            self.assertEqual(main(["merge-gate", "--target", str(root), "--run", "run-merge-001", "--human-approved"]), 0)
+            gate = json.loads((run_dir / "merge_gate.json").read_text())
+            self.assertEqual(gate["status"], "passed")
+            self.assertTrue(gate["merge_ready"])
+
+    def test_skill_evolution_plan_recommends_skill_curator_pr_for_repeated_patterns(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-skill-source-001")
+            findings = {
+                "findings": [
+                    {"id": "F1", "severity": "major", "status": "resolved", "pattern": "missing-validation", "body": "No validation evidence"},
+                    {"id": "F2", "severity": "major", "status": "resolved", "pattern": "missing-validation", "body": "Validation evidence stale"},
+                ]
+            }
+            (run_dir / "review_findings.json").write_text(json.dumps(findings))
+
+            self.assertEqual(
+                main(
+                    [
+                        "skill-evolution-plan",
+                        "--target",
+                        str(root),
+                        "--source-run",
+                        "run-skill-source-001",
+                        "--run-id",
+                        "run-skill-evolution-001",
+                    ]
+                ),
+                0,
+            )
+            plan = json.loads((run_dir / "skill_evolution_plan.json").read_text())
+            self.assertEqual(plan["status"], "recommended")
+            self.assertEqual(plan["patterns"][0]["pattern"], "missing-validation")
+            schedule_plan = json.loads((run_dir / "skill_evolution_schedule_plan.json").read_text())
+            self.assertEqual(schedule_plan["run_plan"][0]["agent_id"], "skill-curator")
+            self.assertEqual(schedule_plan["run_plan"][0]["expected_output"], "skill_update_pr")
 
     def test_diff_gate_records_worktree_changes(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1239,6 +1376,29 @@ class HarnessCliTests(unittest.TestCase):
             )
         )
         (run_dir / "trace.jsonl").write_text("")
+        return run_dir
+
+    def _make_manual_writer_run(
+        self,
+        root: Path,
+        run_id: str,
+        branch: str | None = None,
+        agent_id: str = "backend-implementer",
+        risk_level: str = "medium",
+    ) -> Path:
+        run_dir = self._make_manual_run(root, run_id)
+        run = json.loads((run_dir / "run.json").read_text())
+        run.update(
+            {
+                "agent_id": agent_id,
+                "mode": "writer",
+                "branch": branch or f"ai/issue-123/{agent_id}/{run_id}",
+                "risk_level": risk_level,
+                "task_summary": "Lifecycle gate test",
+                "issue_id": "issue-123",
+            }
+        )
+        (run_dir / "run.json").write_text(json.dumps(run))
         return run_dir
 
     def _install_test_connector(self, root: Path) -> None:

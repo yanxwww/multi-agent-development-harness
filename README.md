@@ -30,6 +30,12 @@ python3 -m ai_harness push-command --target . --run run-20260523-001 --remote or
 python3 -m ai_harness run-push-command --target . --run run-20260523-001 --timeout 900
 python3 -m ai_harness pr-command --target . --run run-20260523-001 --base main --draft
 python3 -m ai_harness run-pr-command --target . --run run-20260523-001 --timeout 900
+python3 -m ai_harness ci-eval-gate --target . --run run-20260523-001
+python3 -m ai_harness review-gate --target . --run run-20260523-001
+python3 -m ai_harness writer-lock --target . --run run-20260523-001
+python3 -m ai_harness writer-transfer --target . --from-run run-20260523-001 --to-run run-repair-001 --reason "CI repair"
+python3 -m ai_harness merge-gate --target . --run run-20260523-001 --human-approved
+python3 -m ai_harness skill-evolution-plan --target . --source-run run-20260523-001 --run-id run-skill-evolution-001
 python3 -m ai_harness dispatch-run --target . --issue 123 --plan schedule_plan.json --run-id run-dispatch-001 --timeout 900 --retries 1 --commit-and-push --push-remote origin --prepare-pr-command --pr-base main --draft-pr
 ```
 
@@ -80,6 +86,16 @@ The deterministic dispatcher validates the plan, resolves `agent_id -> connector
 
 `dispatch-run` is the deterministic orchestration path. It calls `dispatch-plan`, executes child runs only after dependencies have succeeded, renders each child run's `connector_command.json`, executes the connector with timeout/retry trace capture, runs the validation gate, then runs the PR body/gate check. Downstream child tasks are marked `blocked` if a prerequisite fails. With `--commit-and-push`, gated writer children run `diff-gate -> commit-command -> run-commit-command -> push-command -> run-push-command`. With `--prepare-pr-command`, pushed writer children also get a deterministic PR command artifact. The scheduler still targets only `agent_id`; connector selection remains private to the dispatcher.
 
+`ci-eval-gate` evaluates run-local `ci_results.json` and `eval_results.json` artifacts and writes `ci_eval_gate.json`. It does not run CI directly; external CI adapters can write the result artifacts.
+
+`review-gate` evaluates `review_findings.json`, blocks unresolved `blocking` or `major` findings, allows open minor notes, and writes `review_gate.json`.
+
+`writer-lock` creates or confirms the single current branch owner lock under `.ai/locks/branches/` and mirrors it into the run as `writer_lock.json`. `writer-transfer` moves that lock from the current owner run to a repair run with a required reason and trace entries.
+
+`merge-gate` evaluates merge readiness without merging. It requires PR gate, pushed branch, CI/Eval gate, review gate, current writer ownership, and human approval for high-risk runs, then writes `merge_gate.json`.
+
+`skill-evolution-plan` mines repeated review finding patterns from a source run and writes both `skill_evolution_plan.json` and a runtime-blind `skill_evolution_schedule_plan.json` that dispatches `skill-curator` for a dedicated Skill Update PR.
+
 ## Current MVP Boundaries
 
-This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, renders deterministic connector/git/PR commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation, PR body, diff, commit, push, and PR command checks. It does not yet run CI, install skills into external runtimes, enforce branch locks, or merge pull requests. Those belong in the next orchestration layer.
+This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, renders deterministic connector/git/PR commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation, PR body, diff, commit, push, CI/Eval result artifacts, review findings, branch ownership, merge readiness, and skill evolution planning. It does not yet run hosted CI itself, install skills into external runtimes, execute merges, or manage stacked/integration PRs. Those belong in the next orchestration layer.

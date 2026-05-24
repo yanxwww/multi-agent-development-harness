@@ -15,6 +15,14 @@ from .git_publish import (
     run_diff_gate,
     run_push_command,
 )
+from .lifecycle import (
+    acquire_writer_lock,
+    render_skill_evolution_plan,
+    run_ci_eval_gate,
+    run_merge_gate,
+    run_review_gate,
+    transfer_writer_lock,
+)
 from .orchestrator import dispatch_run
 from .pull_requests import render_pr_command, run_pr_command
 from .runs import create_run, render_pr_body
@@ -134,6 +142,34 @@ def build_parser() -> argparse.ArgumentParser:
     run_push_command_parser.add_argument("--target", default=".", help="Target repository root.")
     run_push_command_parser.add_argument("--run", required=True, help="Run id.")
     run_push_command_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds for git push.")
+
+    ci_eval_gate_parser = subparsers.add_parser("ci-eval-gate", help="Evaluate CI and eval readiness for a run.")
+    ci_eval_gate_parser.add_argument("--target", default=".", help="Target repository root.")
+    ci_eval_gate_parser.add_argument("--run", required=True, help="Run id.")
+
+    review_gate_parser = subparsers.add_parser("review-gate", help="Evaluate structured review findings for a run.")
+    review_gate_parser.add_argument("--target", default=".", help="Target repository root.")
+    review_gate_parser.add_argument("--run", required=True, help="Run id.")
+
+    writer_lock_parser = subparsers.add_parser("writer-lock", help="Acquire the branch writer lock for a writer run.")
+    writer_lock_parser.add_argument("--target", default=".", help="Target repository root.")
+    writer_lock_parser.add_argument("--run", required=True, help="Run id.")
+
+    writer_transfer_parser = subparsers.add_parser("writer-transfer", help="Transfer a branch writer lock to another run.")
+    writer_transfer_parser.add_argument("--target", default=".", help="Target repository root.")
+    writer_transfer_parser.add_argument("--from-run", required=True, help="Current owner run id.")
+    writer_transfer_parser.add_argument("--to-run", required=True, help="New owner run id.")
+    writer_transfer_parser.add_argument("--reason", required=True, help="Auditable transfer reason.")
+
+    merge_gate_parser = subparsers.add_parser("merge-gate", help="Evaluate merge readiness without merging.")
+    merge_gate_parser.add_argument("--target", default=".", help="Target repository root.")
+    merge_gate_parser.add_argument("--run", required=True, help="Run id.")
+    merge_gate_parser.add_argument("--human-approved", action="store_true", help="Record human approval for high-risk runs.")
+
+    skill_evolution_parser = subparsers.add_parser("skill-evolution-plan", help="Recommend skill-curator work from repeated findings.")
+    skill_evolution_parser.add_argument("--target", default=".", help="Target repository root.")
+    skill_evolution_parser.add_argument("--source-run", required=True, help="Source run id containing findings or trace.")
+    skill_evolution_parser.add_argument("--run-id", required=True, help="Suggested skill evolution schedule run id.")
 
     dispatch_run_parser = subparsers.add_parser("dispatch-run", help="Dispatch, execute, validate, and gate a SchedulePlan.")
     dispatch_run_parser.add_argument("--target", default=".", help="Target repository root.")
@@ -279,6 +315,35 @@ def main(argv: list[str] | None = None) -> int:
             execution = run_push_command(target=target, run_id=args.run, timeout_seconds=args.timeout)
             print(f"Push command {execution['status']} for {args.run}")
             return 0 if execution["status"] == "succeeded" else 1
+        if args.command == "ci-eval-gate":
+            gate = run_ci_eval_gate(target=target, run_id=args.run)
+            print(f"CI/Eval gate {gate['status']} for {args.run}")
+            return 0 if gate["status"] == "passed" else 1
+        if args.command == "review-gate":
+            gate = run_review_gate(target=target, run_id=args.run)
+            print(f"Review gate {gate['status']} for {args.run}")
+            return 0 if gate["status"] == "passed" else 1
+        if args.command == "writer-lock":
+            lock = acquire_writer_lock(target=target, run_id=args.run)
+            print(f"Writer lock owned by {lock['owner_run_id']} for {args.run}")
+            return 0
+        if args.command == "writer-transfer":
+            lock = transfer_writer_lock(
+                target=target,
+                from_run_id=args.from_run,
+                to_run_id=args.to_run,
+                reason=args.reason,
+            )
+            print(f"Writer lock transferred to {lock['owner_run_id']}")
+            return 0
+        if args.command == "merge-gate":
+            gate = run_merge_gate(target=target, run_id=args.run, human_approved=args.human_approved)
+            print(f"Merge gate {gate['status']} for {args.run}")
+            return 0 if gate["status"] == "passed" else 1
+        if args.command == "skill-evolution-plan":
+            plan = render_skill_evolution_plan(target=target, source_run_id=args.source_run, run_id=args.run_id)
+            print(f"Skill evolution plan {plan['status']} for {args.source_run}")
+            return 0
         if args.command == "dispatch-run":
             summary = dispatch_run(
                 target=target,

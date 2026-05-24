@@ -34,6 +34,11 @@ The CLI provides:
 - `harness push-command` and `harness run-push-command` to render and execute deterministic branch push commands with trace.
 - `harness pr-command` to render a gated `gh pr create` command after PR readiness passes.
 - `harness run-pr-command` to execute a rendered PR command with stdout/stderr, timeout, exit code, and trace capture.
+- `harness ci-eval-gate` to evaluate run-local CI and eval result artifacts.
+- `harness review-gate` to block unresolved blocking or major review findings.
+- `harness writer-lock` and `harness writer-transfer` to enforce single branch writer ownership and audited repair handoff.
+- `harness merge-gate` to evaluate merge readiness without merging.
+- `harness skill-evolution-plan` to recommend a dedicated skill-curator writer PR from repeated feedback patterns.
 
 The MVP includes connector contract metadata for Codex CLI and Claude Code CLI. Connector, git publication, and PR execution are mediated through rendered command artifacts so the dispatcher remains deterministic, traceable, and testable.
 
@@ -54,6 +59,8 @@ AGENTS.md
   rules/
   schemas/
   runs/
+  locks/
+    branches/
 .agents/
   skills/
 .claude/
@@ -166,6 +173,14 @@ diff-gate -> commit-command -> run-commit-command -> push-command -> run-push-co
 
 Each stage writes a run-local artifact and trace event so branch publication can be reviewed independently from agent execution.
 
+After publication, lifecycle gates evaluate PR readiness without giving AI agents direct merge authority:
+
+```text
+ci-eval-gate -> review-gate -> writer-lock -> merge-gate
+```
+
+`writer-transfer` supports controlled repair ownership transfer for the same branch. `skill-evolution-plan` converts repeated findings into a runtime-blind SchedulePlan for `skill-curator`, which must produce its own writer run and Skill Update PR.
+
 ## State Machine
 
 The MVP defines the state machine as policy data, not code orchestration:
@@ -241,14 +256,47 @@ Command execution hardening:
 - commit SHA exists
 - branch name is present
 
+`harness ci-eval-gate` checks post-publication quality readiness:
+
+- `ci_results.json` exists
+- `eval_results.json` exists
+- both top-level statuses are `passed`
+- every listed check is `passed` or explicitly `skipped`
+
+`harness review-gate` checks review readiness:
+
+- unresolved `blocking` findings block
+- unresolved `major` findings block
+- unresolved `minor` and `note` findings are recorded as nonblocking
+
+`harness writer-lock` and `harness writer-transfer` check branch ownership:
+
+- only one current owner run can hold a branch lock
+- a repair run can take ownership only through an explicit transfer from the current owner
+- every lock acquisition and transfer writes run-local artifacts and trace events
+
+`harness merge-gate` checks merge readiness:
+
+- PR gate passed
+- branch push succeeded
+- CI/Eval gate passed
+- review gate passed
+- current writer lock owner matches the run
+- high-risk runs include explicit human approval
+
+`harness skill-evolution-plan` checks feedback mining readiness:
+
+- repeated review finding patterns are counted
+- patterns observed at least twice produce a `skill-curator` SchedulePlan
+- skill updates remain writer runs and must open their own PR
+
 ## Non-Goals
 
 The MVP does not:
 
-- run CI
+- run hosted CI directly
 - install skills into external agent environments
 - implement stacked PRs or integration PRs
-- enforce branch locks
-- merge pull requests
+- execute merge operations
 
 These are adapter and orchestration layers that can be added after the repo contract is stable.
