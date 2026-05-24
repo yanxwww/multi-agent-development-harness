@@ -767,6 +767,106 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(schedule_plan["run_plan"][0]["agent_id"], "skill-curator")
             self.assertEqual(schedule_plan["run_plan"][0]["expected_output"], "skill_update_pr")
 
+    def test_lifecycle_run_chains_post_publication_gates_to_merge_ready(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-lifecycle-001", risk_level="high")
+            (run_dir / "pr_gate.json").write_text(json.dumps({"status": "passed"}))
+            (run_dir / "push_execution.json").write_text(json.dumps({"status": "succeeded"}))
+            (run_dir / "ci_results.json").write_text(json.dumps({"status": "passed", "checks": [{"name": "ci", "status": "passed"}]}))
+            (run_dir / "eval_results.json").write_text(json.dumps({"status": "passed", "checks": [{"name": "eval", "status": "passed"}]}))
+            (run_dir / "review_findings.json").write_text(json.dumps({"findings": []}))
+            (run_dir / "risk_approval.json").write_text(
+                json.dumps(
+                    {
+                        "status": "approved",
+                        "approver_agent_id": "risk-approval-agent",
+                        "source_run_id": "run-lifecycle-001",
+                        "risk_level": "high",
+                        "rationale": "Autonomous policy review passed.",
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "lifecycle-run",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-lifecycle-001",
+                        "--skill-run-id",
+                        "run-lifecycle-skill-001",
+                    ]
+                ),
+                0,
+            )
+
+            lifecycle = json.loads((run_dir / "lifecycle_run.json").read_text())
+            self.assertEqual(lifecycle["status"], "merge_ready")
+            self.assertTrue(lifecycle["merge_ready"])
+            self.assertEqual(
+                [stage["name"] for stage in lifecycle["stages"]],
+                [
+                    "writer_lock",
+                    "ci_eval_gate",
+                    "review_gate",
+                    "risk_approval_gate",
+                    "merge_gate",
+                    "skill_evolution_plan",
+                ],
+            )
+            self.assertEqual(json.loads((run_dir / "merge_gate.json").read_text())["status"], "passed")
+            self.assertEqual(json.loads((run_dir / "skill_evolution_plan.json").read_text())["status"], "not_recommended")
+            self.assertIn("lifecycle_run_finished", (run_dir / "trace.jsonl").read_text())
+
+    def test_lifecycle_run_blocks_merge_but_still_recommends_skill_evolution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-lifecycle-blocked-001", risk_level="medium")
+            (run_dir / "pr_gate.json").write_text(json.dumps({"status": "passed"}))
+            (run_dir / "push_execution.json").write_text(json.dumps({"status": "succeeded"}))
+            (run_dir / "ci_results.json").write_text(json.dumps({"status": "passed", "checks": [{"name": "ci", "status": "passed"}]}))
+            (run_dir / "eval_results.json").write_text(json.dumps({"status": "passed", "checks": [{"name": "eval", "status": "passed"}]}))
+            (run_dir / "review_findings.json").write_text(
+                json.dumps(
+                    {
+                        "findings": [
+                            {
+                                "id": "F1",
+                                "severity": "blocking",
+                                "status": "open",
+                                "pattern": "missing-validation",
+                                "body": "Validation evidence missing.",
+                            },
+                            {
+                                "id": "F2",
+                                "severity": "major",
+                                "status": "open",
+                                "pattern": "missing-validation",
+                                "body": "Validation evidence is stale.",
+                            },
+                        ]
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(["lifecycle-run", "--target", str(root), "--run", "run-lifecycle-blocked-001"]),
+                1,
+            )
+
+            lifecycle = json.loads((run_dir / "lifecycle_run.json").read_text())
+            self.assertEqual(lifecycle["status"], "blocked")
+            self.assertFalse(lifecycle["merge_ready"])
+            self.assertEqual(json.loads((run_dir / "review_gate.json").read_text())["status"], "blocked")
+            self.assertEqual(json.loads((run_dir / "risk_approval_gate.json").read_text())["status"], "not_required")
+            self.assertEqual(json.loads((run_dir / "merge_gate.json").read_text())["status"], "blocked")
+            self.assertEqual(json.loads((run_dir / "skill_evolution_plan.json").read_text())["status"], "recommended")
+            schedule_plan = json.loads((run_dir / "skill_evolution_schedule_plan.json").read_text())
+            self.assertEqual(schedule_plan["run_plan"][0]["agent_id"], "skill-curator")
+
     def test_diff_gate_records_worktree_changes(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

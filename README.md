@@ -37,6 +37,7 @@ python3 -m ai_harness writer-transfer --target . --from-run run-20260523-001 --t
 python3 -m ai_harness risk-approval-gate --target . --run run-20260523-001
 python3 -m ai_harness merge-gate --target . --run run-20260523-001
 python3 -m ai_harness skill-evolution-plan --target . --source-run run-20260523-001 --run-id run-skill-evolution-001
+python3 -m ai_harness lifecycle-run --target . --run run-20260523-001 --skill-run-id run-skill-evolution-001
 python3 -m ai_harness dispatch-run --target . --issue 123 --plan schedule_plan.json --run-id run-dispatch-001 --timeout 900 --retries 1 --commit-and-push --push-remote origin --prepare-pr-command --pr-base main --draft-pr
 ```
 
@@ -99,6 +100,8 @@ The deterministic dispatcher validates the plan, resolves `agent_id -> connector
 
 `skill-evolution-plan` mines repeated review finding patterns from a source run and writes both `skill_evolution_plan.json` and a runtime-blind `skill_evolution_schedule_plan.json` that dispatches `skill-curator` for a dedicated Skill Update PR.
 
+`lifecycle-run` is the deterministic post-publication runner. It chains `writer-lock -> ci-eval-gate -> review-gate -> risk-approval-gate -> merge-gate -> skill-evolution-plan`, writes `lifecycle_run.json`, and returns success only when the run is merge-ready. Skill evolution planning still runs when merge is blocked so repeated failures can create a follow-up Skill Update PR.
+
 ## Current MVP Boundaries
 
-This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, renders deterministic connector/git/PR commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation, PR body, diff, commit, push, CI/Eval result artifacts, review findings, branch ownership, autonomous high-risk approval, merge readiness, and skill evolution planning. It does not yet run hosted CI itself, install skills into external runtimes, execute merges, or manage stacked/integration PRs. Those belong in the next orchestration layer.
+This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, renders deterministic connector/git/PR commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation, PR body, diff, commit, push, CI/Eval result artifacts, review findings, branch ownership, autonomous high-risk approval, merge readiness, lifecycle-run orchestration, and skill evolution planning. It does not yet run hosted CI itself, install skills into external runtimes, execute merges, or manage stacked/integration PRs. Those belong in the next orchestration layer.

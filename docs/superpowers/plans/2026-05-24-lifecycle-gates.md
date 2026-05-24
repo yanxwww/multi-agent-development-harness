@@ -20,6 +20,7 @@
 - [x] Add tests for `writer-lock` and `writer-transfer` branch ownership.
 - [x] Add tests for `merge-gate` requiring push, PR gate, CI/Eval, review, current lock owner, and high-risk autonomous approval.
 - [x] Add tests for `skill-evolution-plan` generating a skill-curator SchedulePlan from repeated feedback patterns.
+- [x] Add tests for `lifecycle-run` chaining lifecycle gates and skill evolution planning.
 
 ### Task 2: Lifecycle Gate Implementation
 

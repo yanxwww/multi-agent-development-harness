@@ -40,6 +40,7 @@ The CLI provides:
 - `harness risk-approval-gate` to validate autonomous high-risk approval from `risk-approval-agent`.
 - `harness merge-gate` to evaluate merge readiness without merging.
 - `harness skill-evolution-plan` to recommend a dedicated skill-curator writer PR from repeated feedback patterns.
+- `harness lifecycle-run` to chain post-publication lifecycle gates and skill evolution planning deterministically.
 
 The MVP includes connector contract metadata for Codex CLI and Claude Code CLI. Connector, git publication, and PR execution are mediated through rendered command artifacts so the dispatcher remains deterministic, traceable, and testable.
 
@@ -184,6 +185,14 @@ ci-eval-gate -> review-gate -> writer-lock -> risk-approval-gate when high risk 
 
 `writer-transfer` supports controlled repair ownership transfer for the same branch. `skill-evolution-plan` converts repeated findings into a runtime-blind SchedulePlan for `skill-curator`, which must produce its own writer run and Skill Update PR.
 
+`lifecycle-run` executes the full deterministic post-publication lifecycle:
+
+```text
+writer-lock -> ci-eval-gate -> review-gate -> risk-approval-gate -> merge-gate -> skill-evolution-plan
+```
+
+It writes `lifecycle_run.json` and returns success only when `merge-gate` passes. Skill evolution planning still runs when merge is blocked, so repeated review or validation patterns can generate a dedicated `skill-curator` follow-up PR.
+
 ## State Machine
 
 The MVP defines the state machine as policy data, not code orchestration:
@@ -292,6 +301,13 @@ Command execution hardening:
 - repeated review finding patterns are counted
 - patterns observed at least twice produce a `skill-curator` SchedulePlan
 - skill updates remain writer runs and must open their own PR
+
+`harness lifecycle-run` checks lifecycle orchestration readiness:
+
+- writer ownership is acquired or confirmed
+- CI/Eval, review, risk approval, and merge gates are run in order
+- merge readiness is summarized in `lifecycle_run.json`
+- skill evolution planning runs even when merge is blocked
 
 ## Non-Goals
 

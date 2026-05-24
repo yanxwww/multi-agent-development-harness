@@ -5,7 +5,7 @@ import re
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 class LifecycleError(Exception):
@@ -264,6 +264,76 @@ def run_merge_gate(target: Path, run_id: str) -> dict[str, Any]:
     return gate
 
 
+def run_lifecycle(target: Path, run_id: str, skill_run_id: str | None = None) -> dict[str, Any]:
+    run_dir = _run_dir(target, run_id)
+    _load_writer_run(run_dir, run_id)
+    skill_run_id = skill_run_id or f"{run_id}-skill-evolution"
+    stages: list[dict[str, Any]] = []
+
+    lock = _run_lifecycle_stage(
+        stages,
+        name="writer_lock",
+        artifact="writer_lock.json",
+        action=lambda: acquire_writer_lock(target, run_id),
+        status_from_result=lambda _: "passed",
+    )
+    ci_eval = _run_lifecycle_stage(
+        stages,
+        name="ci_eval_gate",
+        artifact="ci_eval_gate.json",
+        action=lambda: run_ci_eval_gate(target, run_id),
+        status_from_result=lambda result: str(result.get("status", "missing")),
+    )
+    review = _run_lifecycle_stage(
+        stages,
+        name="review_gate",
+        artifact="review_gate.json",
+        action=lambda: run_review_gate(target, run_id),
+        status_from_result=lambda result: str(result.get("status", "missing")),
+    )
+    risk = _run_lifecycle_stage(
+        stages,
+        name="risk_approval_gate",
+        artifact="risk_approval_gate.json",
+        action=lambda: run_risk_approval_gate(target, run_id),
+        status_from_result=lambda result: str(result.get("status", "missing")),
+    )
+    merge = _run_lifecycle_stage(
+        stages,
+        name="merge_gate",
+        artifact="merge_gate.json",
+        action=lambda: run_merge_gate(target, run_id),
+        status_from_result=lambda result: str(result.get("status", "missing")),
+    )
+    skill = _run_lifecycle_stage(
+        stages,
+        name="skill_evolution_plan",
+        artifact="skill_evolution_plan.json",
+        action=lambda: render_skill_evolution_plan(target, source_run_id=run_id, run_id=skill_run_id),
+        status_from_result=lambda result: str(result.get("status", "missing")),
+    )
+
+    merge_ready = merge.get("status") == "passed"
+    failed = any(stage["status"] == "failed" for stage in stages)
+    summary = {
+        "run_id": run_id,
+        "status": "merge_ready" if merge_ready else "failed" if failed else "blocked",
+        "merge_ready": merge_ready,
+        "stages": stages,
+        "writer_lock_status": lock.get("status"),
+        "ci_eval_status": ci_eval.get("status"),
+        "review_status": review.get("status"),
+        "risk_approval_status": risk.get("status"),
+        "merge_gate_status": merge.get("status"),
+        "skill_evolution_status": skill.get("status"),
+        "skill_run_id": skill_run_id,
+        "created_at": _now(),
+    }
+    (run_dir / "lifecycle_run.json").write_text(json.dumps(summary, indent=2) + "\n")
+    _append_trace(run_dir, {"event": "lifecycle_run_finished", "run_id": run_id, "status": summary["status"]})
+    return summary
+
+
 def render_skill_evolution_plan(target: Path, source_run_id: str, run_id: str) -> dict[str, Any]:
     run_dir = _run_dir(target, source_run_id)
     _load_run(run_dir, source_run_id)
@@ -317,6 +387,31 @@ def render_skill_evolution_plan(target: Path, source_run_id: str, run_id: str) -
     (run_dir / "skill_evolution_schedule_plan.json").write_text(json.dumps(schedule_plan, indent=2) + "\n")
     _append_trace(run_dir, {"event": "skill_evolution_plan_rendered", "run_id": source_run_id, "status": status})
     return plan
+
+
+def _run_lifecycle_stage(
+    stages: list[dict[str, Any]],
+    name: str,
+    artifact: str,
+    action: Callable[[], dict[str, Any]],
+    status_from_result: Callable[[dict[str, Any]], str],
+) -> dict[str, Any]:
+    stage: dict[str, Any] = {"name": name, "artifact": artifact}
+    try:
+        result = action()
+        stage["status"] = status_from_result(result)
+        if isinstance(result, dict) and result.get("reasons"):
+            stage["reasons"] = result["reasons"]
+    except LifecycleError as exc:
+        result = {"status": "blocked", "error": str(exc)}
+        stage["status"] = "blocked"
+        stage["error"] = str(exc)
+    except Exception as exc:
+        result = {"status": "failed", "error": str(exc)}
+        stage["status"] = "failed"
+        stage["error"] = str(exc)
+    stages.append(stage)
+    return result
 
 
 def _collect_result_reasons(name: str, artifact: dict[str, Any], reasons: list[str]) -> None:

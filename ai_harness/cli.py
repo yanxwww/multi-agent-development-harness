@@ -19,6 +19,7 @@ from .lifecycle import (
     acquire_writer_lock,
     render_skill_evolution_plan,
     run_ci_eval_gate,
+    run_lifecycle,
     run_merge_gate,
     run_risk_approval_gate,
     run_review_gate,
@@ -177,6 +178,11 @@ def build_parser() -> argparse.ArgumentParser:
     skill_evolution_parser.add_argument("--target", default=".", help="Target repository root.")
     skill_evolution_parser.add_argument("--source-run", required=True, help="Source run id containing findings or trace.")
     skill_evolution_parser.add_argument("--run-id", required=True, help="Suggested skill evolution schedule run id.")
+
+    lifecycle_run_parser = subparsers.add_parser("lifecycle-run", help="Run deterministic post-publication lifecycle gates.")
+    lifecycle_run_parser.add_argument("--target", default=".", help="Target repository root.")
+    lifecycle_run_parser.add_argument("--run", required=True, help="Run id.")
+    lifecycle_run_parser.add_argument("--skill-run-id", help="Suggested skill evolution schedule run id.")
 
     dispatch_run_parser = subparsers.add_parser("dispatch-run", help="Dispatch, execute, validate, and gate a SchedulePlan.")
     dispatch_run_parser.add_argument("--target", default=".", help="Target repository root.")
@@ -355,6 +361,10 @@ def main(argv: list[str] | None = None) -> int:
             plan = render_skill_evolution_plan(target=target, source_run_id=args.source_run, run_id=args.run_id)
             print(f"Skill evolution plan {plan['status']} for {args.source_run}")
             return 0
+        if args.command == "lifecycle-run":
+            summary = run_lifecycle(target=target, run_id=args.run, skill_run_id=args.skill_run_id)
+            print(f"Lifecycle run {summary['status']} for {args.run}")
+            return 0 if summary["status"] == "merge_ready" else 1
         if args.command == "dispatch-run":
             summary = dispatch_run(
                 target=target,
