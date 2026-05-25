@@ -1,0 +1,26 @@
+version: 1
+run_artifacts:
+  local_only:
+    - .ai/runs/**/stdout.log
+    - .ai/runs/**/stderr.log
+    - .ai/runs/**/connector_events.jsonl
+    - .ai/runs/**/trace.jsonl
+    - .ai/runs/**/prompt.md
+    - .ai/runs/**/*.attempt-*.log
+    - .ai/events/**
+    - .ai/scheduler-workspaces/**
+  commit_allowed:
+    - .ai/runs/.gitkeep
+    - .ai/locks/branches/.gitkeep
+    - .ai/events/.gitkeep
+    - .ai/scheduler-workspaces/.gitkeep
+redaction:
+  block_patterns:
+    - OPENAI_API_KEY
+    - ANTHROPIC_API_KEY
+    - GITHUB_TOKEN
+    - sk-*
+    - ghp_*
+report:
+  command: python3 -m ai_harness artifact-retention-report --target .
+  output: .ai/artifact_retention_report.json

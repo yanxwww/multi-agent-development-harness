@@ -12,3 +12,9 @@ __pycache__/
 .ai/private/*.local.yml
 .ai/locks/branches/*
 !.ai/locks/branches/.gitkeep
+.ai/scheduler-workspaces/*
+!.ai/scheduler-workspaces/.gitkeep
+.ai/events/*
+!.ai/events/.gitkeep
+.ai/artifact_retention_report.json
+.ai/connector_contracts.json

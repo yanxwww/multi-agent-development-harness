@@ -11,6 +11,7 @@ from .integration import render_integration_command, render_integration_plan, ru
 from .lifecycle import run_lifecycle
 from .orchestrator import dispatch_run
 from .pull_requests import render_merge_command, run_merge_command, run_pr_command
+from .repair import run_auto_repair
 from .scheduler import run_scheduler
 
 
@@ -44,6 +45,7 @@ def run_automation(
     auto_review: bool = False,
     auto_risk_approval: bool = False,
     auto_repair: bool = False,
+    run_auto_repair_enabled: bool = False,
     merge: bool = False,
     merge_method: str = "squash",
     delete_branch: bool = False,
@@ -103,6 +105,14 @@ def run_automation(
                 auto_review=auto_review,
                 auto_risk_approval=auto_risk_approval,
                 auto_repair=auto_repair,
+                run_auto_repair_enabled=run_auto_repair_enabled,
+                create_worktree=create_worktree,
+                base_ref=base_ref,
+                prepare_pr_command=prepare_pr_command,
+                pr_base=pr_base,
+                draft_pr=draft_pr,
+                commit_and_push=commit_and_push,
+                push_remote=push_remote,
                 merge=merge,
                 merge_method=merge_method,
                 delete_branch=delete_branch,
@@ -164,6 +174,7 @@ def run_automation(
             "auto_review": auto_review,
             "auto_risk_approval": auto_risk_approval,
             "auto_repair": auto_repair,
+            "run_auto_repair": run_auto_repair_enabled,
             "merge": merge,
             "integration_run_id": integration_run_id,
         },
@@ -187,6 +198,14 @@ def _run_child_publication_phases(
     auto_review: bool,
     auto_risk_approval: bool,
     auto_repair: bool,
+    run_auto_repair_enabled: bool,
+    create_worktree: bool,
+    base_ref: str,
+    prepare_pr_command: bool,
+    pr_base: str,
+    draft_pr: bool,
+    commit_and_push: bool,
+    push_remote: str,
     merge: bool,
     merge_method: str,
     delete_branch: bool,
@@ -266,6 +285,23 @@ def _run_child_publication_phases(
             if auto_repair:
                 repair = render_repair_schedule_plan(target=target, source_run_id=run_id)
                 phase["repair_schedule_status"] = repair["status"]
+                if run_auto_repair_enabled and repair["status"] == "recommended":
+                    repair_run = run_auto_repair(
+                        target=target,
+                        source_run_id=run_id,
+                        timeout_seconds=timeout_seconds,
+                        retries=retries,
+                        validation_mode="skip",
+                        create_worktree=create_worktree,
+                        base_ref=base_ref,
+                        prepare_pr_command=prepare_pr_command,
+                        pr_base=pr_base,
+                        draft_pr=draft_pr,
+                        commit_and_push=commit_and_push,
+                        push_remote=push_remote,
+                    )
+                    phase["auto_repair_run_status"] = repair_run["status"]
+                    phase["auto_repair_run_id"] = repair_run["repair_run_id"]
             return phase
 
     if merge:

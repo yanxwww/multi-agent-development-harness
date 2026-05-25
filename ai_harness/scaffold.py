@@ -353,8 +353,11 @@ def init_scaffold(target: Path, force: bool = False) -> None:
         ".ai/schemas",
         ".ai/runs",
         ".ai/locks/branches",
+        ".ai/scheduler-workspaces",
+        ".ai/events",
         ".agents/skills",
         ".claude/skills",
+        ".github/workflows",
         "docs/architecture",
         "docs/adr",
         "docs/runbooks",
@@ -371,6 +374,7 @@ def init_scaffold(target: Path, force: bool = False) -> None:
     _write(target / ".ai" / "private" / "assignments.yml", PRIVATE_ASSIGNMENTS_YML, force)
     _write(target / ".ai" / "skills" / "registry.yml", SKILL_REGISTRY_YML, force)
     _write(target / ".claude" / "settings.json", json.dumps(CLAUDE_SETTINGS, indent=2) + "\n", force)
+    _write(target / ".github" / "workflows" / "ai-harness-automation.yml", AI_HARNESS_AUTOMATION_WORKFLOW, force)
 
     for agent_id, content in AGENT_FRONT_MATTER.items():
         _write(target / ".ai" / "agents" / f"{agent_id}.md", content, force)
@@ -384,7 +388,14 @@ def init_scaffold(target: Path, force: bool = False) -> None:
     for schema_name, schema in SCHEMAS.items():
         _write(target / ".ai" / "schemas" / f"{schema_name}.schema.json", json.dumps(schema, indent=2) + "\n", force)
 
-    for keep in [".ai/runs/.gitkeep", ".ai/locks/branches/.gitkeep", ".agents/skills/.gitkeep", ".claude/skills/.gitkeep"]:
+    for keep in [
+        ".ai/runs/.gitkeep",
+        ".ai/locks/branches/.gitkeep",
+        ".ai/scheduler-workspaces/.gitkeep",
+        ".ai/events/.gitkeep",
+        ".agents/skills/.gitkeep",
+        ".claude/skills/.gitkeep",
+    ]:
         _write(target / keep, "", force=False)
 
 
@@ -407,6 +418,12 @@ def _merge_gitignore(path: Path) -> None:
         "!.ai/runs/.gitkeep",
         ".ai/locks/branches/*",
         "!.ai/locks/branches/.gitkeep",
+        ".ai/scheduler-workspaces/*",
+        "!.ai/scheduler-workspaces/.gitkeep",
+        ".ai/events/*",
+        "!.ai/events/.gitkeep",
+        ".ai/artifact_retention_report.json",
+        ".ai/connector_contracts.json",
         ".ai/private/*.local.yml",
         "__pycache__/",
         "*.pyc",
@@ -854,7 +871,99 @@ skill_pr_requirements:
   - rollback plan
   - permission impact notes
 """,
+    "artifact-retention": """version: 1
+run_artifacts:
+  local_only:
+    - .ai/runs/**/stdout.log
+    - .ai/runs/**/stderr.log
+    - .ai/runs/**/connector_events.jsonl
+    - .ai/runs/**/trace.jsonl
+    - .ai/runs/**/prompt.md
+    - .ai/runs/**/*.attempt-*.log
+    - .ai/events/**
+    - .ai/scheduler-workspaces/**
+  commit_allowed:
+    - .ai/runs/.gitkeep
+    - .ai/locks/branches/.gitkeep
+    - .ai/events/.gitkeep
+    - .ai/scheduler-workspaces/.gitkeep
+redaction:
+  block_patterns:
+    - OPENAI_API_KEY
+    - ANTHROPIC_API_KEY
+    - GITHUB_TOKEN
+    - sk-*
+    - ghp_*
+report:
+  command: python3 -m ai_harness artifact-retention-report --target .
+  output: .ai/artifact_retention_report.json
+""",
 }
+
+AI_HARNESS_AUTOMATION_WORKFLOW = """name: AI Harness Automation
+
+on:
+  issues:
+    types: [opened, edited, labeled]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: Execute automation-run instead of dry-run planning
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  automation-daemon:
+    name: Event automation daemon
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install harness
+        run: python -m pip install -e .
+
+      - name: Validate harness contracts
+        run: |
+          python -m ai_harness validate --target .
+          python -m ai_harness connector-contracts --target .
+
+      - name: Run automation daemon
+        env:
+          EXECUTE: ${{ github.event.inputs.execute || 'false' }}
+        run: |
+          RUN_ID="run-gh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          EXTRA_ARGS=""
+          if [ "${EXECUTE}" = "true" ]; then
+            EXTRA_ARGS="--execute"
+          fi
+          python -m ai_harness automation-daemon \\
+            --target . \\
+            --event-file "$GITHUB_EVENT_PATH" \\
+            --run-id "$RUN_ID" \\
+            --validation-mode skip \\
+            --no-worktree \\
+            $EXTRA_ARGS
+
+      - name: Artifact retention report
+        run: python -m ai_harness artifact-retention-report --target .
+"""
 
 CLAUDE_SETTINGS = {
     "permissions": {

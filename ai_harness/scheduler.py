@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,12 @@ def run_scheduler(
         create_worktree=False,
         mode="read_only",
     )
+    workspace = prepare_scheduler_workspace(target=target, run_id=run_id)
+    run["worktree"] = workspace
+    run["scheduler_sanitized_workspace"] = True
+    run_dir = target / ".ai" / "runs" / run_id
+    (run_dir / "run.json").write_text(json.dumps(run, indent=2) + "\n")
+    _append_trace(run_dir, {"event": "scheduler_workspace_prepared", "run_id": run_id, "workspace": workspace})
     render_connector_command(
         target=target,
         run_id=run_id,
@@ -72,6 +79,36 @@ def run_scheduler(
     (run_dir / "scheduler_run.json").write_text(json.dumps(summary, indent=2) + "\n")
     _append_trace(run_dir, {"event": "scheduler_run_finished", "run_id": run_id, "status": "succeeded"})
     return summary
+
+
+def prepare_scheduler_workspace(target: Path, run_id: str) -> str:
+    workspace = target / ".ai" / "scheduler-workspaces" / run_id
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True)
+
+    _copy_file_if_exists(target / "AGENTS.md", workspace / "AGENTS.md")
+    _copy_tree_if_exists(target / "docs", workspace / "docs")
+    _copy_file_if_exists(target / ".ai" / "agent-catalog.yml", workspace / ".ai" / "agent-catalog.yml")
+    for directory in ["agents", "rules", "schemas", "skills"]:
+        _copy_tree_if_exists(target / ".ai" / directory, workspace / ".ai" / directory)
+    return f".ai/scheduler-workspaces/{run_id}"
+
+
+def _copy_file_if_exists(source: Path, destination: Path) -> None:
+    if not source.exists():
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+
+
+def _copy_tree_if_exists(source: Path, destination: Path) -> None:
+    if not source.exists():
+        return
+    if destination.exists():
+        shutil.rmtree(destination)
+    ignore = shutil.ignore_patterns("private", "runs", "locks", "scheduler-workspaces", "events", "connectors")
+    shutil.copytree(source, destination, ignore=ignore)
 
 
 def _append_trace(run_dir: Path, event: dict[str, Any]) -> None:

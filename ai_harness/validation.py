@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .connector_contracts import ConnectorContractError, validate_connector_contracts
 from .yaml_lite import load_yaml, loads_yaml
 
 
@@ -67,6 +68,11 @@ def validate_scaffold(target: Path) -> None:
             errors.append(f"agent doc is not visible in agent catalog: {agent_id}")
         if agent_id not in binding_map:
             errors.append(f"agent doc has no private binding: {agent_id}")
+
+    try:
+        validate_connector_contracts(connectors)
+    except ConnectorContractError as exc:
+        errors.append(str(exc))
 
     for schema_path in sorted((target / ".ai" / "schemas").glob("*.schema.json")):
         try:
