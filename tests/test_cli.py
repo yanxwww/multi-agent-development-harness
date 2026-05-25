@@ -24,7 +24,17 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue((root / ".ai" / "schemas" / "review_findings.schema.json").exists())
             self.assertTrue((root / ".ai" / "rules" / "validation-policy.yml").exists())
             self.assertTrue((root / ".ai" / "rules" / "artifact-retention.yml").exists())
+            self.assertTrue((root / ".ai" / "local-daemon" / "events" / ".gitkeep").exists())
+            self.assertTrue((root / ".ai" / "local-daemon" / "leases" / ".gitkeep").exists())
+            self.assertTrue((root / ".ai" / "local-daemon" / "polls" / ".gitkeep").exists())
+            launchd = root / ".ai" / "local-daemon" / "launchd" / "com.ai-harness.local-daemon.plist"
+            self.assertTrue(launchd.exists())
+            self.assertIn("--execute", launchd.read_text())
             self.assertTrue((root / ".github" / "workflows" / "ai-harness-automation.yml").exists())
+            workflow = (root / ".github" / "workflows" / "ai-harness-automation.yml").read_text()
+            self.assertNotIn("github.event.inputs.execute", workflow)
+            self.assertNotIn("$EXTRA_ARGS", workflow)
+            self.assertNotIn("--execute", workflow)
             agent_result_schema = json.loads((root / ".ai" / "schemas" / "agent_result.schema.json").read_text())
             self.assertFalse(agent_result_schema["additionalProperties"])
             self.assertFalse(agent_result_schema["properties"]["evidence"]["additionalProperties"])
@@ -39,6 +49,8 @@ class HarnessCliTests(unittest.TestCase):
             self.assertIn("!.claude/skills/.gitkeep", gitignore)
             self.assertIn(".ai/scheduler-workspaces/*", gitignore)
             self.assertIn(".ai/events/*", gitignore)
+            self.assertIn(".ai/local-daemon/events/*", gitignore)
+            self.assertIn(".ai/local-daemon/state.json", gitignore)
             self.assertFalse((root / "CLAUDE.md").exists())
 
     def test_scheduler_catalog_hides_runtime_bindings(self):
@@ -2436,6 +2448,196 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(summary["issue"], "42")
             self.assertIn("Add daemon task", task["summary"])
             self.assertFalse((root / ".ai" / "runs" / "run-daemon-001").exists())
+
+    def test_github_sync_poll_creates_local_events_for_label_and_comment_triggers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            fake_gh = root / "fake-gh"
+            issues = [
+                {
+                    "number": 42,
+                    "title": "Build local daemon",
+                    "body": "Run this locally.",
+                    "url": "https://github.com/example/repo/issues/42",
+                    "updatedAt": "2026-05-26T01:02:03Z",
+                    "labels": [{"name": "ai:auto"}],
+                    "comments": [{"body": "/ai run", "author": {"login": "yanxwww"}, "createdAt": "2026-05-26T01:03:03Z"}],
+                }
+            ]
+            script = (
+                "import json,sys; "
+                f"issues={issues!r}; "
+                "args=sys.argv[1:]; "
+                "print(json.dumps(issues if args[:2]==['issue','list'] else []));"
+            )
+            fake_gh.write_text(f"#!{sys.executable}\n{script}\n")
+            fake_gh.chmod(0o755)
+
+            self.assertEqual(
+                main(
+                    [
+                        "github-sync-poll",
+                        "--target",
+                        str(root),
+                        "--run-id",
+                        "run-local-poll-001",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+
+            poll = json.loads((root / ".ai" / "local-daemon" / "polls" / "run-local-poll-001.json").read_text())
+            self.assertEqual(poll["status"], "planned")
+            self.assertEqual(poll["created_event_count"], 2)
+            event_ids = {event["event_id"] for event in poll["created_events"]}
+            self.assertEqual(event_ids, {"issue-42-ai-auto", "issue-42-ai-run"})
+            task = json.loads((root / ".ai" / "local-daemon" / "events" / "issue-42-ai-run" / "scheduler_task.json").read_text())
+            self.assertIn("Build local daemon", task["summary"])
+            self.assertIn("/ai run", task["trigger"])
+            state = json.loads((root / ".ai" / "local-daemon" / "state.json").read_text())
+            self.assertEqual(set(state["processed_event_ids"]), event_ids)
+
+            self.assertEqual(
+                main(
+                    [
+                        "github-sync-poll",
+                        "--target",
+                        str(root),
+                        "--run-id",
+                        "run-local-poll-002",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+            poll2 = json.loads((root / ".ai" / "local-daemon" / "polls" / "run-local-poll-002.json").read_text())
+            self.assertEqual(poll2["created_event_count"], 0)
+
+    def test_local_daemon_once_runs_github_sync_poll(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            fake_gh = root / "fake-gh"
+            issues = [
+                {
+                    "number": 7,
+                    "title": "Plan from daemon",
+                    "body": "Plan only.",
+                    "url": "https://github.com/example/repo/issues/7",
+                    "updatedAt": "2026-05-26T01:02:03Z",
+                    "labels": [{"name": "ai:plan"}],
+                    "comments": [],
+                }
+            ]
+            script = (
+                "import json,sys; "
+                f"issues={issues!r}; "
+                "args=sys.argv[1:]; "
+                "print(json.dumps(issues if args[:2]==['issue','list'] else []));"
+            )
+            fake_gh.write_text(f"#!{sys.executable}\n{script}\n")
+            fake_gh.chmod(0o755)
+
+            self.assertEqual(
+                main(
+                    [
+                        "local-daemon",
+                        "--target",
+                        str(root),
+                        "--run-id",
+                        "run-local-daemon-001",
+                        "--once",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+
+            summary = json.loads((root / ".ai" / "local-daemon" / "polls" / "run-local-daemon-001.json").read_text())
+            self.assertEqual(summary["mode"], "once")
+            self.assertEqual(summary["created_event_count"], 1)
+            self.assertTrue((root / ".ai" / "local-daemon" / "events" / "issue-7-ai-plan" / "scheduler_task.json").exists())
+
+    def test_github_sync_poll_requires_exclusive_local_lease(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            lease = root / ".ai" / "local-daemon" / "leases" / "poll.lock"
+            lease.write_text(json.dumps({"run_id": "run-other"}))
+
+            self.assertEqual(
+                main(
+                    [
+                        "github-sync-poll",
+                        "--target",
+                        str(root),
+                        "--run-id",
+                        "run-local-poll-locked",
+                    ]
+                ),
+                1,
+            )
+            self.assertFalse((root / ".ai" / "local-daemon" / "polls" / "run-local-poll-locked.json").exists())
+
+    def test_github_status_sync_comments_without_raw_trace(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            event_dir = root / ".ai" / "local-daemon" / "events" / "issue-42-ai-run"
+            event_dir.mkdir(parents=True)
+            (event_dir / "event.json").write_text(
+                json.dumps(
+                    {
+                        "event_id": "issue-42-ai-run",
+                        "source": {"kind": "issue", "number": 42, "url": "https://github.com/example/repo/issues/42"},
+                        "trigger": "/ai run",
+                        "action": "run",
+                    }
+                )
+            )
+            argv_log = root / "gh-argv.json"
+            fake_gh = root / "fake-gh"
+            script = (
+                "import json,sys; "
+                f"open({str(argv_log)!r}, 'w').write(json.dumps(sys.argv[1:])); "
+                "print('https://github.com/example/repo/issues/42#issuecomment-1')"
+            )
+            fake_gh.write_text(f"#!{sys.executable}\n{script}\n")
+            fake_gh.chmod(0o755)
+
+            self.assertEqual(
+                main(
+                    [
+                        "github-status-sync",
+                        "--target",
+                        str(root),
+                        "--event-id",
+                        "issue-42-ai-run",
+                        "--status",
+                        "planned",
+                        "--message",
+                        "scheduler task ready",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+
+            body = (event_dir / "status_comment.md").read_text()
+            self.assertIn("Status: planned", body)
+            self.assertIn("scheduler task ready", body)
+            self.assertNotIn("trace.jsonl", body)
+            argv = json.loads(argv_log.read_text())
+            self.assertEqual(argv[:3], ["issue", "comment", "42"])
+            self.assertIn("--body-file", argv)
+            sync = json.loads((event_dir / "status_sync.json").read_text())
+            self.assertEqual(sync["status"], "succeeded")
 
     def test_artifact_retention_report_detects_secret_like_run_artifacts(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -355,6 +355,10 @@ def init_scaffold(target: Path, force: bool = False) -> None:
         ".ai/locks/branches",
         ".ai/scheduler-workspaces",
         ".ai/events",
+        ".ai/local-daemon/events",
+        ".ai/local-daemon/leases",
+        ".ai/local-daemon/polls",
+        ".ai/local-daemon/launchd",
         ".agents/skills",
         ".claude/skills",
         ".github/workflows",
@@ -375,6 +379,11 @@ def init_scaffold(target: Path, force: bool = False) -> None:
     _write(target / ".ai" / "skills" / "registry.yml", SKILL_REGISTRY_YML, force)
     _write(target / ".claude" / "settings.json", json.dumps(CLAUDE_SETTINGS, indent=2) + "\n", force)
     _write(target / ".github" / "workflows" / "ai-harness-automation.yml", AI_HARNESS_AUTOMATION_WORKFLOW, force)
+    _write(
+        target / ".ai" / "local-daemon" / "launchd" / "com.ai-harness.local-daemon.plist",
+        LOCAL_DAEMON_LAUNCHD_PLIST,
+        force,
+    )
 
     for agent_id, content in AGENT_FRONT_MATTER.items():
         _write(target / ".ai" / "agents" / f"{agent_id}.md", content, force)
@@ -393,6 +402,9 @@ def init_scaffold(target: Path, force: bool = False) -> None:
         ".ai/locks/branches/.gitkeep",
         ".ai/scheduler-workspaces/.gitkeep",
         ".ai/events/.gitkeep",
+        ".ai/local-daemon/events/.gitkeep",
+        ".ai/local-daemon/leases/.gitkeep",
+        ".ai/local-daemon/polls/.gitkeep",
         ".agents/skills/.gitkeep",
         ".claude/skills/.gitkeep",
     ]:
@@ -422,6 +434,14 @@ def _merge_gitignore(path: Path) -> None:
         "!.ai/scheduler-workspaces/.gitkeep",
         ".ai/events/*",
         "!.ai/events/.gitkeep",
+        ".ai/local-daemon/events/*",
+        "!.ai/local-daemon/events/.gitkeep",
+        ".ai/local-daemon/leases/*",
+        "!.ai/local-daemon/leases/.gitkeep",
+        ".ai/local-daemon/polls/*",
+        "!.ai/local-daemon/polls/.gitkeep",
+        ".ai/local-daemon/state.json",
+        ".ai/local-daemon/*.log",
         ".ai/artifact_retention_report.json",
         ".ai/connector_contracts.json",
         ".ai/private/*.local.yml",
@@ -908,11 +928,6 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
-    inputs:
-      execute:
-        description: Execute automation-run instead of dry-run planning
-        required: false
-        default: "false"
 
 permissions:
   contents: read
@@ -945,24 +960,50 @@ jobs:
           python -m ai_harness connector-contracts --target .
 
       - name: Run automation daemon
-        env:
-          EXECUTE: ${{ github.event.inputs.execute || 'false' }}
         run: |
           RUN_ID="run-gh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          EXTRA_ARGS=""
-          if [ "${EXECUTE}" = "true" ]; then
-            EXTRA_ARGS="--execute"
-          fi
           python -m ai_harness automation-daemon \\
             --target . \\
             --event-file "$GITHUB_EVENT_PATH" \\
             --run-id "$RUN_ID" \\
             --validation-mode skip \\
-            --no-worktree \\
-            $EXTRA_ARGS
+            --no-worktree
 
       - name: Artifact retention report
         run: python -m ai_harness artifact-retention-report --target .
+"""
+
+LOCAL_DAEMON_LAUNCHD_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ai-harness.local-daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>python3</string>
+    <string>-m</string>
+    <string>ai_harness</string>
+    <string>local-daemon</string>
+    <string>--target</string>
+    <string>REPLACE_WITH_REPO_PATH</string>
+    <string>--run-id</string>
+    <string>run-local-daemon</string>
+    <string>--execute</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>REPLACE_WITH_REPO_PATH</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>REPLACE_WITH_REPO_PATH/.ai/local-daemon/stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>REPLACE_WITH_REPO_PATH/.ai/local-daemon/stderr.log</string>
+</dict>
+</plist>
 """
 
 CLAUDE_SETTINGS = {

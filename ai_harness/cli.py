@@ -30,6 +30,7 @@ from .lifecycle import (
     run_review_gate,
     transfer_writer_lock,
 )
+from .local_daemon import run_github_sync_poll, run_local_daemon, sync_github_status
 from .orchestrator import dispatch_run
 from .pull_requests import render_merge_command, render_pr_command, run_merge_command, run_pr_command
 from .retention import run_artifact_retention_report
@@ -342,6 +343,47 @@ def build_parser() -> argparse.ArgumentParser:
     automation_daemon_parser.add_argument("--base-ref", default="HEAD", help="Git base ref for worktree creation.")
     automation_daemon_parser.add_argument("--no-worktree", action="store_true", help="Prepare metadata without creating git worktrees.")
 
+    github_sync_poll_parser = subparsers.add_parser(
+        "github-sync-poll",
+        help="Poll GitHub from the local machine and create local daemon events for AI triggers.",
+    )
+    github_sync_poll_parser.add_argument("--target", default=".", help="Target repository root.")
+    github_sync_poll_parser.add_argument("--run-id", required=True, help="Poll run id.")
+    github_sync_poll_parser.add_argument("--executable", default="gh", help="GitHub CLI executable.")
+    github_sync_poll_parser.add_argument("--execute", action="store_true", help="Execute local automation for new events.")
+    github_sync_poll_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per deterministic command.")
+    github_sync_poll_parser.add_argument("--retries", type=int, default=0, help="Retry count after failed connector attempts.")
+    github_sync_poll_parser.add_argument("--validation-mode", choices=["run", "skip"], default="run", help="Validation mode.")
+    github_sync_poll_parser.add_argument("--base-ref", default="HEAD", help="Git base ref for worktree creation.")
+    github_sync_poll_parser.add_argument("--no-worktree", action="store_true", help="Prepare metadata without creating git worktrees.")
+
+    local_daemon_parser = subparsers.add_parser(
+        "local-daemon",
+        help="Run the local-first daemon that polls GitHub and wakes local Codex/Claude runtimes.",
+    )
+    local_daemon_parser.add_argument("--target", default=".", help="Target repository root.")
+    local_daemon_parser.add_argument("--run-id", required=True, help="Daemon run id.")
+    local_daemon_parser.add_argument("--executable", default="gh", help="GitHub CLI executable.")
+    local_daemon_parser.add_argument("--once", action="store_true", help="Run one poll cycle and exit.")
+    local_daemon_parser.add_argument("--interval", type=float, default=60.0, help="Polling interval seconds.")
+    local_daemon_parser.add_argument("--execute", action="store_true", help="Execute local automation for new events.")
+    local_daemon_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per deterministic command.")
+    local_daemon_parser.add_argument("--retries", type=int, default=0, help="Retry count after failed connector attempts.")
+    local_daemon_parser.add_argument("--validation-mode", choices=["run", "skip"], default="run", help="Validation mode.")
+    local_daemon_parser.add_argument("--base-ref", default="HEAD", help="Git base ref for worktree creation.")
+    local_daemon_parser.add_argument("--no-worktree", action="store_true", help="Prepare metadata without creating git worktrees.")
+
+    github_status_sync_parser = subparsers.add_parser(
+        "github-status-sync",
+        help="Post a redacted local daemon status update back to a GitHub issue or PR.",
+    )
+    github_status_sync_parser.add_argument("--target", default=".", help="Target repository root.")
+    github_status_sync_parser.add_argument("--event-id", required=True, help="Local daemon event id.")
+    github_status_sync_parser.add_argument("--status", required=True, help="Status string to publish.")
+    github_status_sync_parser.add_argument("--message", required=True, help="Short redacted status message.")
+    github_status_sync_parser.add_argument("--executable", default="gh", help="GitHub CLI executable.")
+    github_status_sync_parser.add_argument("--timeout", type=float, default=30.0, help="Timeout seconds for GitHub comment.")
+
     return parser
 
 
@@ -638,6 +680,47 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"Automation daemon {summary['status']} for {args.run_id}")
             return 0 if summary["status"] in {"planned", "succeeded"} else 1
+        if args.command == "github-sync-poll":
+            summary = run_github_sync_poll(
+                target=target,
+                run_id=args.run_id,
+                executable=args.executable,
+                execute=args.execute,
+                timeout_seconds=args.timeout,
+                retries=args.retries,
+                validation_mode=args.validation_mode,
+                create_worktree=not args.no_worktree,
+                base_ref=args.base_ref,
+            )
+            print(f"GitHub sync poll {summary['status']} for {args.run_id}")
+            return 0 if summary["status"] in {"planned", "succeeded"} else 1
+        if args.command == "local-daemon":
+            summary = run_local_daemon(
+                target=target,
+                run_id=args.run_id,
+                executable=args.executable,
+                once=args.once,
+                interval_seconds=args.interval,
+                execute=args.execute,
+                timeout_seconds=args.timeout,
+                retries=args.retries,
+                validation_mode=args.validation_mode,
+                create_worktree=not args.no_worktree,
+                base_ref=args.base_ref,
+            )
+            print(f"Local daemon {summary['status']} for {args.run_id}")
+            return 0 if summary["status"] in {"planned", "succeeded"} else 1
+        if args.command == "github-status-sync":
+            summary = sync_github_status(
+                target=target,
+                event_id=args.event_id,
+                status=args.status,
+                message=args.message,
+                executable=args.executable,
+                timeout_seconds=args.timeout,
+            )
+            print(f"GitHub status sync {summary['status']} for {args.event_id}")
+            return 0 if summary["status"] == "succeeded" else 1
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

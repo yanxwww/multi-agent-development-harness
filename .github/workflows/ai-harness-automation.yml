@@ -6,11 +6,6 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
-    inputs:
-      execute:
-        description: Execute automation-run instead of dry-run planning
-        required: false
-        default: "false"
 
 permissions:
   contents: read
@@ -43,21 +38,14 @@ jobs:
           python -m ai_harness connector-contracts --target .
 
       - name: Run automation daemon
-        env:
-          EXECUTE: ${{ github.event.inputs.execute || 'false' }}
         run: |
           RUN_ID="run-gh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          EXTRA_ARGS=""
-          if [ "${EXECUTE}" = "true" ]; then
-            EXTRA_ARGS="--execute"
-          fi
           python -m ai_harness automation-daemon \
             --target . \
             --event-file "$GITHUB_EVENT_PATH" \
             --run-id "$RUN_ID" \
             --validation-mode skip \
-            --no-worktree \
-            $EXTRA_ARGS
+            --no-worktree
 
       - name: Artifact retention report
         run: python -m ai_harness artifact-retention-report --target .
