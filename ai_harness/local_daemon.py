@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .automation import run_automation
+from .github import run_github_doctor
 from .local_daemon_policy import load_trigger_policy
 from .runs import validate_run_id
 from .validation import validate_scaffold
@@ -42,6 +43,29 @@ def run_github_sync_poll(
 
     root = _local_daemon_root(target)
     with _poll_lease(root, run_id):
+        execute_preflight = None
+        if execute:
+            doctor = run_github_doctor(target=target, executable=executable)
+            execute_preflight = {
+                "status": doctor["status"],
+                "path": ".ai/github_doctor.json",
+            }
+            if doctor["status"] != "passed":
+                summary = {
+                    "run_id": run_id,
+                    "mode": "poll",
+                    "status": "failed",
+                    "execute": execute,
+                    "execute_preflight": execute_preflight,
+                    "created_event_count": 0,
+                    "skipped_event_count": 0,
+                    "created_events": [],
+                    "skipped_events": [],
+                    "created_at": _now(),
+                }
+                _write_poll_summary(root, run_id, summary)
+                return summary
+
         state = _load_state(root)
         processed = set(state.get("processed_event_ids", []))
         items = _load_github_items(target=target, executable=executable)
@@ -139,6 +163,8 @@ def run_github_sync_poll(
             "skipped_events": skipped_events,
             "created_at": _now(),
         }
+        if execute_preflight is not None:
+            summary["execute_preflight"] = execute_preflight
         _write_poll_summary(root, run_id, summary)
         return summary
 
