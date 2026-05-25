@@ -80,7 +80,7 @@ The deterministic dispatcher validates the plan, resolves `agent_id -> connector
 
 `run-connector` executes `connector_command.json` with a per-attempt timeout and retry count. For configured connector profiles, it re-derives the expected command from run metadata before execution and rejects mutated command artifacts. It writes `stdout.log`, `stderr.log`, per-attempt logs, `connector_events.jsonl` for JSON stdout lines, `connector_execution.json`, and trace events in `trace.jsonl`.
 
-`skill-sync` installs only the run agent's allowlisted skills into the bound runtime skill directory. Codex-bound runs write `.agents/skills/<skill>/SKILL.md`; Claude Code-bound runs write `.claude/skills/<skill>/SKILL.md`. It copies concrete `.ai/skills/<skill>/` definitions when present, otherwise generates a minimal runtime skill from `.ai/skills/registry.yml`, then writes `skill_sync.json`.
+`skill-sync` installs only the run agent's allowlisted skills into the bound runtime skill directory. Codex-bound runs write `.agents/skills/<skill>/SKILL.md`; Claude Code-bound runs write `.claude/skills/<skill>/SKILL.md`. These runtime install directories are git-ignored so ordinary writer commits do not include ephemeral skill material. Skill source changes belong under `.ai/skills/**` and should be proposed by `skill-curator`. It copies concrete `.ai/skills/<skill>/` definitions when present, otherwise generates a minimal runtime skill from `.ai/skills/registry.yml`, then writes `skill_sync.json`.
 
 `validation-gate` runs or explicitly skips the validation commands declared in run metadata, falling back to `evidence.json` for manual runs. This prevents a mutable evidence bundle from becoming execution authority. It writes `validation_gate.json`, updates validation status in the evidence bundle, and appends trace events.
 
@@ -98,7 +98,7 @@ The deterministic dispatcher validates the plan, resolves `agent_id -> connector
 
 `github-doctor` checks local GitHub readiness by running `gh auth status`, `gh repo view`, and `git remote -v`, then writes `.ai/github_doctor.json`.
 
-`github-checks-command` renders `gh pr checks` into `github_checks_command.json` after a PR exists. `run-github-checks-command` re-derives the expected command, executes it with timeout, captures stdout/stderr, normalizes GitHub check buckets into `ci_results.json`, and writes a default skipped `eval_results.json` unless one is supplied.
+`github-checks-command` renders `gh pr checks` into `github_checks_command.json` after a PR exists. `run-github-checks-command` re-derives the expected command, executes it with timeout, captures stdout/stderr, normalizes GitHub check buckets into `ci_results.json`, preserves an existing `eval_results.json` unless an explicit replacement is supplied, and writes a default skipped eval artifact only when no eval artifact exists. Empty GitHub check output is treated as pending CI, not a passing result.
 
 `dispatch-plan` rejects unsafe run ids, duplicate tasks, unknown dependencies, and dependency cycles before creating child runs. If child worktree creation fails mid-plan, the dispatcher removes already-created child run directories, worktrees, and local branches it owns.
 

@@ -399,6 +399,10 @@ def _merge_gitignore(path: Path) -> None:
     required = [
         ".worktrees/",
         "CLAUDE.md",
+        ".agents/skills/*",
+        "!.agents/skills/.gitkeep",
+        ".claude/skills/*",
+        "!.claude/skills/.gitkeep",
         ".ai/runs/*",
         "!.ai/runs/.gitkeep",
         ".ai/locks/branches/*",

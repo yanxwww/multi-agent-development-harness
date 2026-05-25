@@ -134,9 +134,15 @@ def run_github_checks_command(
         ci_results = _failed_ci_results(run_id, error)
     else:
         ci_results = _ci_results_from_checks(run_id, checks)
-    eval_results = _load_eval_results(eval_results_path) if eval_results_path else _default_eval_results(run_id)
+    eval_results_output_path = run_dir / "eval_results.json"
+    if eval_results_path:
+        eval_results = _load_eval_results(eval_results_path)
+    elif eval_results_output_path.exists():
+        eval_results = _load_eval_results(eval_results_output_path)
+    else:
+        eval_results = _default_eval_results(run_id)
     (run_dir / "ci_results.json").write_text(json.dumps(ci_results, indent=2) + "\n")
-    (run_dir / "eval_results.json").write_text(json.dumps(eval_results, indent=2) + "\n")
+    eval_results_output_path.write_text(json.dumps(eval_results, indent=2) + "\n")
 
     status = "succeeded" if not error and not result["timed_out"] and result["exit_code"] in {0, 8} else "failed"
     execution = {
@@ -245,6 +251,21 @@ def _parse_checks_stdout(stdout: str) -> list[dict[str, Any]]:
 
 
 def _ci_results_from_checks(run_id: str, checks: list[dict[str, Any]]) -> dict[str, Any]:
+    if not checks:
+        return {
+            "run_id": run_id,
+            "source": "github-pr-checks",
+            "status": "pending",
+            "checks": [
+                {
+                    "name": "github-pr-checks",
+                    "status": "pending",
+                    "reason": "no GitHub checks returned",
+                }
+            ],
+            "created_at": _now(),
+        }
+
     normalized = []
     statuses = []
     for check in checks:

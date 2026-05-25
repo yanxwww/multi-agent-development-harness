@@ -21,7 +21,12 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue((root / ".ai" / "agents" / "risk-approval-agent.md").exists())
             self.assertTrue((root / ".ai" / "schemas" / "schedule_plan.schema.json").exists())
             self.assertTrue((root / ".claude" / "settings.json").exists())
-            self.assertIn("CLAUDE.md", (root / ".gitignore").read_text())
+            gitignore = (root / ".gitignore").read_text()
+            self.assertIn("CLAUDE.md", gitignore)
+            self.assertIn(".agents/skills/*", gitignore)
+            self.assertIn("!.agents/skills/.gitkeep", gitignore)
+            self.assertIn(".claude/skills/*", gitignore)
+            self.assertIn("!.claude/skills/.gitkeep", gitignore)
             self.assertFalse((root / "CLAUDE.md").exists())
 
     def test_scheduler_catalog_hides_runtime_bindings(self):
@@ -870,6 +875,78 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(ci["status"], "failed")
             self.assertEqual(ci["checks"][0]["status"], "failed")
 
+    def test_run_github_checks_command_preserves_existing_eval_results_without_eval_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-github-checks-preserve-eval-001")
+            fake_gh = root / "fake-gh"
+            fake_gh.write_text(
+                "#!/bin/sh\n"
+                "printf '[{\"name\":\"unit\",\"bucket\":\"pass\",\"state\":\"SUCCESS\",\"workflow\":\"ci\"}]'\n"
+            )
+            fake_gh.chmod(0o755)
+            existing_eval = {"status": "failed", "checks": [{"name": "quality", "status": "failed"}]}
+            (run_dir / "eval_results.json").write_text(json.dumps(existing_eval))
+            (run_dir / "pr_execution.json").write_text(json.dumps({"status": "succeeded", "number": 12}))
+            self.assertEqual(
+                main(
+                    [
+                        "github-checks-command",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-github-checks-preserve-eval-001",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+
+            self.assertEqual(
+                main(["run-github-checks-command", "--target", str(root), "--run", "run-github-checks-preserve-eval-001", "--timeout", "5"]),
+                0,
+            )
+
+            execution = json.loads((run_dir / "github_checks_execution.json").read_text())
+            eval_results = json.loads((run_dir / "eval_results.json").read_text())
+            self.assertEqual(execution["eval_status"], "failed")
+            self.assertEqual(eval_results, existing_eval)
+
+    def test_run_github_checks_command_marks_empty_successful_checks_as_pending_ci(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-github-checks-empty-success-001")
+            fake_gh = root / "fake-gh"
+            fake_gh.write_text("#!/bin/sh\nprintf '[]'\n")
+            fake_gh.chmod(0o755)
+            (run_dir / "pr_execution.json").write_text(json.dumps({"status": "succeeded", "number": 13}))
+            self.assertEqual(
+                main(
+                    [
+                        "github-checks-command",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-github-checks-empty-success-001",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+
+            self.assertEqual(
+                main(["run-github-checks-command", "--target", str(root), "--run", "run-github-checks-empty-success-001", "--timeout", "5"]),
+                0,
+            )
+
+            execution = json.loads((run_dir / "github_checks_execution.json").read_text())
+            ci = json.loads((run_dir / "ci_results.json").read_text())
+            self.assertEqual(execution["ci_status"], "pending")
+            self.assertEqual(ci["status"], "pending")
+            self.assertEqual(ci["checks"][0]["status"], "pending")
+
     def test_run_github_checks_command_rejects_mutated_argv(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1666,6 +1743,81 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(json.loads((child_dir / "push_execution.json").read_text())["status"], "succeeded")
             self.assertTrue((child_dir / "pr_command.json").exists())
             self.assertEqual(self._remote_branch_sha(remote, "ai/issue-123/backend-implementer/" + child_run_id), child["commit_sha"])
+
+    def test_dispatch_run_does_not_commit_runtime_skill_sync_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            remote = root / "origin.git"
+            main(["init", "--target", str(root)])
+            self._install_writing_test_connector(root)
+            self._init_git_repo(root)
+            self._init_bare_remote(root, remote)
+            plan = root / "schedule_plan.json"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T-skills",
+                                "mode": "writer",
+                                "depends_on": [],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                                "success_criteria": ["Connector writes a change"],
+                            }
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "dispatch-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-dispatch-skill-ignore-001",
+                        "--validation-mode",
+                        "skip",
+                        "--timeout",
+                        "5",
+                        "--commit-and-push",
+                        "--push-remote",
+                        "origin",
+                    ]
+                ),
+                0,
+            )
+
+            schedule_dir = root / ".ai" / "runs" / "run-dispatch-skill-ignore-001"
+            child = json.loads((schedule_dir / "dispatch_run.json").read_text())["children"][0]
+            child_run_id = "run-dispatch-skill-ignore-001-T-skills-backend-implementer"
+            worktree = root / ".worktrees" / f"{child_run_id}-backend-implementer"
+            self.assertTrue((worktree / ".agents" / "skills" / "backend-implementation" / "SKILL.md").exists())
+
+            import subprocess
+
+            result = subprocess.run(
+                ["git", "show", "--name-only", "--pretty=format:", child["commit_sha"]],
+                cwd=worktree,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            committed_paths = {line for line in result.stdout.splitlines() if line.strip()}
+            self.assertIn("AGENTS.md", committed_paths)
+            self.assertFalse(any(path.startswith(".agents/skills/") for path in committed_paths))
+            self.assertFalse(any(path.startswith(".claude/skills/") for path in committed_paths))
 
     def test_automation_run_writes_top_level_summary(self):
         with tempfile.TemporaryDirectory() as temp:
