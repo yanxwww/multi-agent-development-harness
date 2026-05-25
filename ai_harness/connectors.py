@@ -59,6 +59,7 @@ def build_connector_command(
     values = {
         "workspace": shlex.quote(str(workspace_path)),
         "output_schema": shlex.quote(str(schema_path)),
+        "output_schema_json": shlex.quote(schema_path.read_text()),
     }
     display = _render_template(template, values)
     command: dict[str, Any] = {

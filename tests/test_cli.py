@@ -21,6 +21,8 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue((root / ".ai" / "agents" / "scheduler-agent.md").exists())
             self.assertTrue((root / ".ai" / "agents" / "risk-approval-agent.md").exists())
             self.assertTrue((root / ".ai" / "schemas" / "schedule_plan.schema.json").exists())
+            claude_connector = (root / ".ai" / "connectors" / "claude-code-cli.yml").read_text()
+            self.assertIn("{output_schema_json}", claude_connector)
             self.assertTrue((root / ".claude" / "settings.json").exists())
             gitignore = (root / ".gitignore").read_text()
             self.assertIn("CLAUDE.md", gitignore)
@@ -362,6 +364,9 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(command["argv"][:3], ["claude", "--bare", "-p"])
             self.assertIn("--append-system-prompt-file", command["argv"])
             self.assertIn("AGENTS.md", command["argv"])
+            schema_arg = command["argv"][command["argv"].index("--json-schema") + 1]
+            self.assertNotIn(".ai/schemas/", schema_arg)
+            self.assertEqual(json.loads(schema_arg)["type"], "object")
             self.assertEqual(command["prompt_file"], ".ai/runs/run-command-002/prompt.md")
             prompt = root / command["prompt_file"]
             self.assertEqual(command["prompt_sha256"], hashlib.sha256(prompt.read_bytes()).hexdigest())
