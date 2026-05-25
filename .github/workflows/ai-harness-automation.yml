@@ -1,0 +1,63 @@
+name: AI Harness Automation
+
+on:
+  issues:
+    types: [opened, edited, labeled]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: Execute automation-run instead of dry-run planning
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  automation-daemon:
+    name: Event automation daemon
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install harness
+        run: python -m pip install -e .
+
+      - name: Validate harness contracts
+        run: |
+          python -m ai_harness validate --target .
+          python -m ai_harness connector-contracts --target .
+
+      - name: Run automation daemon
+        env:
+          EXECUTE: ${{ github.event.inputs.execute || 'false' }}
+        run: |
+          RUN_ID="run-gh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          EXTRA_ARGS=""
+          if [ "${EXECUTE}" = "true" ]; then
+            EXTRA_ARGS="--execute"
+          fi
+          python -m ai_harness automation-daemon \
+            --target . \
+            --event-file "$GITHUB_EVENT_PATH" \
+            --run-id "$RUN_ID" \
+            --validation-mode skip \
+            --no-worktree \
+            $EXTRA_ARGS
+
+      - name: Artifact retention report
+        run: python -m ai_harness artifact-retention-report --target .

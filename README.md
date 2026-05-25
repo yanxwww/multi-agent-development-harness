@@ -16,6 +16,8 @@ The harness is intentionally runtime-blind at the scheduling layer:
 ```bash
 python3 -m ai_harness init --target .
 python3 -m ai_harness validate --target .
+python3 -m ai_harness connector-contracts --target .
+python3 -m ai_harness artifact-retention-report --target .
 python3 -m ai_harness create-run --target . --issue 123 --agent backend-implementer --task task.json --no-worktree
 python3 -m ai_harness pr-body --target . --run run-20260523-001
 python3 -m ai_harness skill-sync --target . --run run-20260523-001
@@ -49,7 +51,8 @@ python3 -m ai_harness integration-plan --target . --issue 123 --schedule-run run
 python3 -m ai_harness integration-command --target . --run run-integration-001
 python3 -m ai_harness run-integration-command --target . --run run-integration-001 --timeout 900
 python3 -m ai_harness dispatch-run --target . --issue 123 --plan schedule_plan.json --run-id run-dispatch-001 --timeout 900 --retries 1 --commit-and-push --push-remote origin --prepare-pr-command --pr-base main --draft-pr
-python3 -m ai_harness automation-run --target . --issue 123 --scheduler-task scheduler_task.json --run-id run-automation-001 --timeout 900 --retries 1 --commit-and-push --prepare-pr-command --run-pr-command --github-checks --lifecycle --auto-review --auto-risk-approval --auto-repair --merge
+python3 -m ai_harness automation-run --target . --issue 123 --scheduler-task scheduler_task.json --run-id run-automation-001 --timeout 900 --retries 1 --commit-and-push --prepare-pr-command --run-pr-command --github-checks --lifecycle --auto-review --auto-risk-approval --auto-repair --run-auto-repair --merge
+python3 -m ai_harness automation-daemon --target . --event-file "$GITHUB_EVENT_PATH" --run-id run-gh-001
 ```
 
 Installable entry point:
@@ -77,11 +80,13 @@ The scheduler only emits `SchedulePlan` JSON containing `agent_id`, task, depend
 
 The deterministic dispatcher validates the plan, resolves `agent_id -> connector profile` through `.ai/private/assignments.yml`, creates run records, prepares worktrees for writer runs, and records dispatch trace.
 
+`connector-contracts` validates connector permission profile contracts and writes `.ai/connector_contracts.json`. Codex read-only profiles must use a read-only sandbox, Codex writer profiles must use workspace-write, Claude profiles must use bare JSON-schema execution, and read-only profiles must not expose write-capable tools.
+
 `connector-command` renders the CLI command that a future process supervisor will execute. It writes `.ai/runs/<run-id>/connector_command.json` with `argv`, display text, connector id, connector profile, workspace, output schema, prompt file, and prompt hash. It does not execute Codex or Claude Code.
 
 `run-connector` executes `connector_command.json` with a per-attempt timeout and retry count. For configured connector profiles, it re-derives the expected command from run metadata before execution and rejects mutated command artifacts. It verifies the prompt hash, passes the prompt to the connector process over stdin, and writes `stdout.log`, `stderr.log`, per-attempt logs, `connector_events.jsonl` for JSON stdout lines, `connector_execution.json`, and trace events in `trace.jsonl`.
 
-`scheduler-run` runs `scheduler-agent` as a normal read-only agent identity, renders a connector command with the `schedule_plan` output schema, executes it with timeout/retry trace capture, extracts a `SchedulePlan` from raw stdout, JSON events, or wrapped/fenced JSON output, validates that the plan remains runtime-blind, and writes `.ai/runs/<run-id>/schedule_plan.json`.
+`scheduler-run` runs `scheduler-agent` as a normal read-only agent identity from a sanitized workspace under `.ai/scheduler-workspaces/<run-id>`. That workspace contains only `AGENTS.md`, visible catalog/docs/rules/schemas/skills, and docs. It physically omits `.ai/private`, connector bindings, locks, runs, events, and connector contracts before rendering the connector command. The command uses the `schedule_plan` output schema, executes with timeout/retry trace capture, extracts a `SchedulePlan` from raw stdout, JSON events, or wrapped/fenced JSON output, validates that the plan remains runtime-blind, and writes `.ai/runs/<run-id>/schedule_plan.json`.
 
 `skill-sync` installs only the run agent's allowlisted skills into the bound runtime skill directory. Codex-bound runs write `.agents/skills/<skill>/SKILL.md`; Claude Code-bound runs write `.claude/skills/<skill>/SKILL.md`. These runtime install directories are git-ignored so ordinary writer commits do not include ephemeral skill material. Skill source changes belong under `.ai/skills/**` and should be proposed by `skill-curator`. It copies concrete `.ai/skills/<skill>/` definitions when present, otherwise generates a minimal runtime skill from `.ai/skills/registry.yml`, then writes `skill_sync.json`.
 
@@ -115,7 +120,11 @@ Writer validation commands are selected from `.ai/rules/validation-policy.yml` w
 
 `risk-approval-agent` is the autonomous continuous approver for high-risk runs. It produces `risk_approval.json`; `risk-approval-gate` validates that decision and writes `risk_approval_gate.json`.
 
-When `automation-run --auto-review` is set, the harness dispatches a read-only `pr-reviewer` run and copies its structured `review_findings.json` back to the source writer run before lifecycle gates. When `--auto-risk-approval` is set, high-risk writer runs dispatch `risk-approval-agent` and attach `risk_approval.json` before `risk-approval-gate`.
+When `automation-run --auto-review` is set, the harness dispatches a read-only `pr-reviewer` run and copies its structured `review_findings.json` back to the source writer run before lifecycle gates. When `--auto-risk-approval` is set, high-risk writer runs dispatch `risk-approval-agent` and attach `risk_approval.json` before `risk-approval-gate`. When `--auto-repair --run-auto-repair` is set and lifecycle blocks, the harness renders the source run's `repair_schedule_plan.json`, dispatches that plan through a dedicated repair schedule run, executes the `ci-repair-agent` child through the normal connector/validation/PR gate chain, and writes `auto_repair_run.json` on the source run.
+
+`automation-daemon` converts GitHub event payloads into `.ai/events/<run-id>/scheduler_task.json` and `automation_daemon.json`. It defaults to a dry-run planning artifact so GitHub Actions can observe events safely; `--execute` feeds the generated scheduler task into `automation-run`.
+
+`artifact-retention-report` scans `.ai/runs` for local-only runtime artifacts and secret-like content, then writes `.ai/artifact_retention_report.json`. The policy lives in `.ai/rules/artifact-retention.yml`; redaction findings are blocking, while runtime logs and prompts are local retention notes.
 
 `merge-gate` evaluates merge readiness without merging. It requires PR gate, pushed branch, CI/Eval gate, review gate, current writer ownership, and a passed risk approval gate when the run risk is high, then writes `merge_gate.json`.
 
@@ -133,4 +142,4 @@ When `automation-run --auto-review` is set, the harness dispatches a read-only `
 
 ## Current MVP Boundaries
 
-This version creates and validates the repo contract, captures scheduler output from a real agent identity, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, installs allowlisted runtime skills, renders deterministic connector/git/PR/GitHub-checks/integration/merge commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation policy, PR body, diff, commit, push, GitHub CI result artifacts, eval result artifacts, automated reviewer findings, branch ownership, autonomous high-risk approval, merge readiness, lifecycle-run orchestration, repair follow-up scheduling, integration execution, merge execution, automation-run orchestration, and skill evolution planning. It still relies on configured local CLI credentials and repository branch protection for hosted GitHub operations; it does not bypass those controls.
+This version creates and validates the repo contract, captures scheduler output from a real agent identity in a sanitized workspace, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, installs allowlisted runtime skills, validates connector permission contracts, renders deterministic connector/git/PR/GitHub-checks/integration/merge commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation policy, PR body, diff, commit, push, GitHub CI result artifacts, eval result artifacts, automated reviewer findings, branch ownership, autonomous high-risk approval, merge readiness, lifecycle-run orchestration, executable auto-repair dispatch, integration execution, merge execution, event-driven daemon planning, automation-run orchestration, artifact retention/redaction reporting, and skill evolution planning. It still relies on configured local CLI credentials and repository branch protection for hosted GitHub operations; it does not bypass those controls.

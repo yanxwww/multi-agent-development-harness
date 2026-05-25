@@ -23,6 +23,8 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue((root / ".ai" / "schemas" / "schedule_plan.schema.json").exists())
             self.assertTrue((root / ".ai" / "schemas" / "review_findings.schema.json").exists())
             self.assertTrue((root / ".ai" / "rules" / "validation-policy.yml").exists())
+            self.assertTrue((root / ".ai" / "rules" / "artifact-retention.yml").exists())
+            self.assertTrue((root / ".github" / "workflows" / "ai-harness-automation.yml").exists())
             agent_result_schema = json.loads((root / ".ai" / "schemas" / "agent_result.schema.json").read_text())
             self.assertFalse(agent_result_schema["additionalProperties"])
             self.assertFalse(agent_result_schema["properties"]["evidence"]["additionalProperties"])
@@ -35,6 +37,8 @@ class HarnessCliTests(unittest.TestCase):
             self.assertIn("!.agents/skills/.gitkeep", gitignore)
             self.assertIn(".claude/skills/*", gitignore)
             self.assertIn("!.claude/skills/.gitkeep", gitignore)
+            self.assertIn(".ai/scheduler-workspaces/*", gitignore)
+            self.assertIn(".ai/events/*", gitignore)
             self.assertFalse((root / "CLAUDE.md").exists())
 
     def test_scheduler_catalog_hides_runtime_bindings(self):
@@ -69,6 +73,26 @@ class HarnessCliTests(unittest.TestCase):
                 )
             )
             self.assertEqual(main(["validate", "--target", str(root)]), 1)
+
+    def test_validate_rejects_read_only_connector_profile_with_write_tools(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            connector = root / ".ai" / "connectors" / "claude-code-cli.yml"
+            connector.write_text(connector.read_text().replace("tools: Read,Grep,Glob", "tools: Read,Edit,Grep,Glob", 1))
+
+            self.assertEqual(main(["validate", "--target", str(root)]), 1)
+
+    def test_connector_contracts_command_writes_report(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+
+            self.assertEqual(main(["connector-contracts", "--target", str(root)]), 0)
+
+            report = json.loads((root / ".ai" / "connector_contracts.json").read_text())
+            self.assertEqual(report["status"], "passed")
+            self.assertEqual(report["connectors_checked"], ["claude-code-cli", "codex-cli"])
 
     def test_create_run_writes_writer_metadata_without_worktree(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -2041,6 +2065,45 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(plan["run_plan"][0]["agent_id"], "backend-implementer")
             self.assertNotIn("connector", json.dumps(plan))
 
+    def test_scheduler_run_uses_sanitized_workspace_without_private_bindings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "scheduler_task.json"
+            main(["init", "--target", str(root)])
+            self._install_multi_output_test_connector(root)
+            self._bind_agent_to_test_connector(root, "scheduler-agent")
+            task.write_text(json.dumps({"summary": "Plan from sanitized context"}))
+
+            self.assertEqual(
+                main(
+                    [
+                        "scheduler-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--task",
+                        str(task),
+                        "--run-id",
+                        "run-scheduler-sanitized-001",
+                        "--timeout",
+                        "5",
+                    ]
+                ),
+                0,
+            )
+
+            run_dir = root / ".ai" / "runs" / "run-scheduler-sanitized-001"
+            run = json.loads((run_dir / "run.json").read_text())
+            command = json.loads((run_dir / "connector_command.json").read_text())
+            workspace = root / command["workspace"]
+            self.assertEqual(run["worktree"], ".ai/scheduler-workspaces/run-scheduler-sanitized-001")
+            self.assertTrue((workspace / "AGENTS.md").exists())
+            self.assertTrue((workspace / ".ai" / "agent-catalog.yml").exists())
+            self.assertTrue((workspace / ".ai" / "agents" / "scheduler-agent.md").exists())
+            self.assertFalse((workspace / ".ai" / "private").exists())
+            self.assertFalse((workspace / ".ai" / "private" / "assignments.yml").exists())
+
     def test_automation_run_can_start_from_scheduler_task(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -2151,6 +2214,73 @@ class HarnessCliTests(unittest.TestCase):
             repair_plan = json.loads((child_dir / "repair_schedule_plan.json").read_text())
             self.assertEqual(repair_plan["run_plan"][0]["agent_id"], "ci-repair-agent")
             self.assertEqual(summary["status"], "failed")
+
+    def test_automation_run_can_dispatch_auto_repair_run_when_lifecycle_blocks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            self._install_multi_output_test_connector(root)
+            self._bind_agent_to_test_connector(root, "backend-implementer")
+            self._bind_agent_to_test_connector(root, "ci-repair-agent")
+            self._init_git_repo(root)
+            plan = root / "automation_auto_repair_plan.json"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T-repair-source",
+                                "mode": "writer",
+                                "depends_on": [],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                                "success_criteria": ["Connector succeeds"],
+                            }
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "automation-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-automation-auto-repair-001",
+                        "--validation-mode",
+                        "skip",
+                        "--timeout",
+                        "5",
+                        "--lifecycle",
+                        "--auto-repair",
+                        "--run-auto-repair",
+                    ]
+                ),
+                1,
+            )
+
+            schedule_dir = root / ".ai" / "runs" / "run-automation-auto-repair-001"
+            source_run_id = "run-automation-auto-repair-001-T-repair-source-backend-implementer"
+            source_dir = root / ".ai" / "runs" / source_run_id
+            summary = json.loads((schedule_dir / "automation_run.json").read_text())
+            child = summary["children"][0]
+            repair_dispatch_id = f"{source_run_id}-repair-dispatch"
+            repair_child_id = f"{repair_dispatch_id}-T-repair-ci-repair-agent"
+            self.assertEqual(child["repair_schedule_status"], "recommended")
+            self.assertEqual(child["auto_repair_run_status"], "succeeded")
+            self.assertTrue((source_dir / "auto_repair_run.json").exists())
+            self.assertTrue((root / ".ai" / "runs" / repair_dispatch_id / "dispatch_run.json").exists())
+            self.assertTrue((root / ".ai" / "runs" / repair_child_id / "connector_execution.json").exists())
 
     def test_automation_run_writes_top_level_summary(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -2267,6 +2397,59 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(child["publication_status"], "skipped")
             self.assertFalse((child_dir / "github_checks_command.json").exists())
             self.assertFalse((child_dir / "lifecycle_run.json").exists())
+
+    def test_automation_daemon_dry_run_writes_event_scheduler_task(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            event = root / "event.json"
+            main(["init", "--target", str(root)])
+            event.write_text(
+                json.dumps(
+                    {
+                        "action": "opened",
+                        "issue": {"number": 42, "title": "Add daemon task", "body": "Build the event bridge."},
+                        "repository": {"full_name": "example/repo"},
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "automation-daemon",
+                        "--target",
+                        str(root),
+                        "--event-file",
+                        str(event),
+                        "--run-id",
+                        "run-daemon-001",
+                    ]
+                ),
+                0,
+            )
+
+            event_dir = root / ".ai" / "events" / "run-daemon-001"
+            summary = json.loads((event_dir / "automation_daemon.json").read_text())
+            task = json.loads((event_dir / "scheduler_task.json").read_text())
+            self.assertEqual(summary["status"], "planned")
+            self.assertFalse(summary["executed"])
+            self.assertEqual(summary["issue"], "42")
+            self.assertIn("Add daemon task", task["summary"])
+            self.assertFalse((root / ".ai" / "runs" / "run-daemon-001").exists())
+
+    def test_artifact_retention_report_detects_secret_like_run_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            run_dir = root / ".ai" / "runs" / "run-secret-001"
+            run_dir.mkdir(parents=True)
+            (run_dir / "stdout.log").write_text("OPENAI_API_KEY=sk-test-secret\n")
+
+            self.assertEqual(main(["artifact-retention-report", "--target", str(root)]), 0)
+
+            report = json.loads((root / ".ai" / "artifact_retention_report.json").read_text())
+            self.assertEqual(report["status"], "findings")
+            self.assertTrue(any(finding["kind"] == "redaction" for finding in report["findings"]))
 
     def test_dispatch_plan_rejects_unknown_dependency_and_cycles(self):
         with tempfile.TemporaryDirectory() as temp:

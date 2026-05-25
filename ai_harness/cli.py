@@ -5,7 +5,9 @@ import sys
 from pathlib import Path
 
 from .automation import run_automation
+from .connector_contracts import write_connector_contract_report
 from .connectors import render_connector_command
+from .daemon import run_automation_daemon
 from .dispatch import dispatch_plan
 from .executor import run_connector_command
 from .gates import run_pr_gate, run_validation_gate
@@ -30,11 +32,12 @@ from .lifecycle import (
 )
 from .orchestrator import dispatch_run
 from .pull_requests import render_merge_command, render_pr_command, run_merge_command, run_pr_command
+from .retention import run_artifact_retention_report
 from .runs import create_run, render_pr_body
 from .scaffold import init_scaffold
 from .scheduler import run_scheduler
 from .skill_sync import sync_run_skills
-from .validation import validate_scaffold
+from .validation import load_connectors, validate_scaffold
 
 
 class HarnessError(Exception):
@@ -54,6 +57,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate_parser = subparsers.add_parser("validate", help="Validate harness configuration.")
     validate_parser.add_argument("--target", default=".", help="Target repository root.")
+
+    connector_contracts_parser = subparsers.add_parser(
+        "connector-contracts",
+        help="Validate connector permission profile contracts and write an audit report.",
+    )
+    connector_contracts_parser.add_argument("--target", default=".", help="Target repository root.")
+
+    artifact_retention_parser = subparsers.add_parser(
+        "artifact-retention-report",
+        help="Scan run artifacts for retention and redaction findings.",
+    )
+    artifact_retention_parser.add_argument("--target", default=".", help="Target repository root.")
 
     run_parser = subparsers.add_parser("create-run", help="Create an isolated agent run record.")
     run_parser.add_argument("--target", default=".", help="Target repository root.")
@@ -306,11 +321,26 @@ def build_parser() -> argparse.ArgumentParser:
     automation_run_parser.add_argument("--auto-review", action="store_true", help="Run pr-reviewer and attach review_findings.json before lifecycle gates.")
     automation_run_parser.add_argument("--auto-risk-approval", action="store_true", help="Run risk-approval-agent for high-risk writer runs before lifecycle gates.")
     automation_run_parser.add_argument("--auto-repair", action="store_true", help="Render ci-repair-agent schedule plans when lifecycle gates block.")
+    automation_run_parser.add_argument("--run-auto-repair", action="store_true", help="Dispatch and execute ci-repair-agent runs when repair plans are recommended.")
     automation_run_parser.add_argument("--merge", action="store_true", help="Render and execute merge command after lifecycle merge gate passes.")
     automation_run_parser.add_argument("--merge-method", choices=["merge", "squash", "rebase"], default="squash", help="GitHub merge method for --merge.")
     automation_run_parser.add_argument("--delete-branch", action="store_true", help="Delete the PR branch when --merge succeeds.")
     automation_run_parser.add_argument("--skill-run-id", help="Suggested skill evolution schedule run id for lifecycle.")
     automation_run_parser.add_argument("--integration-run-id", help="Create and execute an integration-agent run after child publication.")
+
+    automation_daemon_parser = subparsers.add_parser(
+        "automation-daemon",
+        help="Process a GitHub event payload into a scheduler task, optionally executing automation-run.",
+    )
+    automation_daemon_parser.add_argument("--target", default=".", help="Target repository root.")
+    automation_daemon_parser.add_argument("--event-file", required=True, help="GitHub event JSON payload.")
+    automation_daemon_parser.add_argument("--run-id", required=True, help="Event processing run id.")
+    automation_daemon_parser.add_argument("--execute", action="store_true", help="Execute automation-run after planning.")
+    automation_daemon_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per deterministic command.")
+    automation_daemon_parser.add_argument("--retries", type=int, default=0, help="Retry count after failed connector attempts.")
+    automation_daemon_parser.add_argument("--validation-mode", choices=["run", "skip"], default="run", help="Validation mode.")
+    automation_daemon_parser.add_argument("--base-ref", default="HEAD", help="Git base ref for worktree creation.")
+    automation_daemon_parser.add_argument("--no-worktree", action="store_true", help="Prepare metadata without creating git worktrees.")
 
     return parser
 
@@ -328,6 +358,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "validate":
             validate_scaffold(target)
             print(f"AI harness scaffold is valid at {target}")
+            return 0
+        if args.command == "connector-contracts":
+            report = write_connector_contract_report(target=target, connectors=load_connectors(target))
+            print(f"Connector contracts {report['status']} at {target}")
+            return 0 if report["status"] == "passed" else 1
+        if args.command == "artifact-retention-report":
+            report = run_artifact_retention_report(target=target)
+            print(f"Artifact retention report {report['status']} at {target}")
             return 0
         if args.command == "create-run":
             run = create_run(
@@ -577,6 +615,7 @@ def main(argv: list[str] | None = None) -> int:
                 auto_review=args.auto_review,
                 auto_risk_approval=args.auto_risk_approval,
                 auto_repair=args.auto_repair,
+                run_auto_repair_enabled=args.run_auto_repair,
                 merge=args.merge,
                 merge_method=args.merge_method,
                 delete_branch=args.delete_branch,
@@ -585,6 +624,20 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"Automation run {summary['status']} for {args.run_id}")
             return 0 if summary["status"] == "succeeded" else 1
+        if args.command == "automation-daemon":
+            summary = run_automation_daemon(
+                target=target,
+                event_file=Path(args.event_file).expanduser().resolve(),
+                run_id=args.run_id,
+                execute=args.execute,
+                timeout_seconds=args.timeout,
+                retries=args.retries,
+                validation_mode=args.validation_mode,
+                create_worktree=not args.no_worktree,
+                base_ref=args.base_ref,
+            )
+            print(f"Automation daemon {summary['status']} for {args.run_id}")
+            return 0 if summary["status"] in {"planned", "succeeded"} else 1
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
