@@ -5,11 +5,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .followups import render_repair_schedule_plan, run_review_agent, run_risk_approval_agent
 from .github import render_github_checks_command, run_github_checks_command
 from .integration import render_integration_command, render_integration_plan, run_integration_command
 from .lifecycle import run_lifecycle
 from .orchestrator import dispatch_run
-from .pull_requests import run_pr_command
+from .pull_requests import render_merge_command, run_merge_command, run_pr_command
+from .scheduler import run_scheduler
 
 
 class AutomationError(Exception):
@@ -19,9 +21,11 @@ class AutomationError(Exception):
 def run_automation(
     target: Path,
     issue: str,
-    plan_path: Path,
+    plan_path: Path | None,
     run_id: str,
     timeout_seconds: float,
+    scheduler_task_path: Path | None = None,
+    scheduler_run_id: str | None = None,
     retries: int = 0,
     validation_mode: str = "run",
     create_worktree: bool = True,
@@ -37,11 +41,33 @@ def run_automation(
     checks_watch: bool = False,
     checks_interval: int = 10,
     lifecycle: bool = False,
+    auto_review: bool = False,
+    auto_risk_approval: bool = False,
+    auto_repair: bool = False,
+    merge: bool = False,
+    merge_method: str = "squash",
+    delete_branch: bool = False,
     skill_run_id: str | None = None,
     integration_run_id: str | None = None,
 ) -> dict[str, Any]:
     if timeout_seconds <= 0:
         raise AutomationError("timeout must be greater than 0")
+    if (plan_path is None) == (scheduler_task_path is None):
+        raise AutomationError("provide exactly one of plan_path or scheduler_task_path")
+
+    scheduler_summary = None
+    if scheduler_task_path is not None:
+        scheduler_run_id = scheduler_run_id or f"{run_id}-scheduler"
+        scheduler_summary = run_scheduler(
+            target=target,
+            issue=issue,
+            task_path=scheduler_task_path,
+            run_id=scheduler_run_id,
+            timeout_seconds=timeout_seconds,
+            retries=retries,
+        )
+        plan_path = target / scheduler_summary["schedule_plan"]
+    assert plan_path is not None
 
     dispatch_summary = dispatch_run(
         target=target,
@@ -74,6 +100,13 @@ def run_automation(
                 checks_watch=checks_watch,
                 checks_interval=checks_interval,
                 lifecycle=lifecycle,
+                auto_review=auto_review,
+                auto_risk_approval=auto_risk_approval,
+                auto_repair=auto_repair,
+                merge=merge,
+                merge_method=merge_method,
+                delete_branch=delete_branch,
+                retries=retries,
                 skill_run_id=skill_run_id,
             )
         except Exception as exc:
@@ -117,6 +150,7 @@ def run_automation(
     summary = {
         "run_id": run_id,
         "status": status,
+        "scheduler_run": scheduler_summary,
         "dispatch_status": dispatch_summary["status"],
         "dispatch_run": "dispatch_run.json",
         "children": child_phases,
@@ -127,6 +161,10 @@ def run_automation(
             "run_pr_commands": run_pr_commands,
             "github_checks": github_checks,
             "lifecycle": lifecycle,
+            "auto_review": auto_review,
+            "auto_risk_approval": auto_risk_approval,
+            "auto_repair": auto_repair,
+            "merge": merge,
             "integration_run_id": integration_run_id,
         },
         "created_at": _now(),
@@ -146,6 +184,13 @@ def _run_child_publication_phases(
     checks_watch: bool,
     checks_interval: int,
     lifecycle: bool,
+    auto_review: bool,
+    auto_risk_approval: bool,
+    auto_repair: bool,
+    merge: bool,
+    merge_method: str,
+    delete_branch: bool,
+    retries: int,
     skill_run_id: str | None,
 ) -> dict[str, Any]:
     run_id = child["run_id"]
@@ -189,10 +234,54 @@ def _run_child_publication_phases(
             phase["status"] = "failed"
             return phase
 
+    if auto_review:
+        review = run_review_agent(
+            target=target,
+            source_run_id=run_id,
+            timeout_seconds=timeout_seconds,
+            retries=retries,
+        )
+        phase["review_agent_status"] = review["status"]
+        if review["status"] != "succeeded":
+            phase["status"] = "failed"
+            return phase
+
+    if auto_risk_approval:
+        risk = run_risk_approval_agent(
+            target=target,
+            source_run_id=run_id,
+            timeout_seconds=timeout_seconds,
+            retries=retries,
+        )
+        phase["risk_approval_agent_status"] = risk["status"]
+        if risk["status"] not in {"succeeded", "not_required"}:
+            phase["status"] = "failed"
+            return phase
+
     if lifecycle:
         lifecycle_summary = run_lifecycle(target=target, run_id=run_id, skill_run_id=skill_run_id)
         phase["lifecycle_status"] = lifecycle_summary["status"]
         if lifecycle_summary["status"] != "merge_ready":
+            phase["status"] = "failed"
+            if auto_repair:
+                repair = render_repair_schedule_plan(target=target, source_run_id=run_id)
+                phase["repair_schedule_status"] = repair["status"]
+            return phase
+
+    if merge:
+        if not lifecycle:
+            phase.update({"status": "failed", "error": "merge requires lifecycle gate execution"})
+            return phase
+        render_merge_command(
+            target=target,
+            run_id=run_id,
+            method=merge_method,
+            delete_branch=delete_branch,
+            executable=gh_executable,
+        )
+        merge_execution = run_merge_command(target=target, run_id=run_id, timeout_seconds=timeout_seconds)
+        phase["merge_status"] = merge_execution["status"]
+        if merge_execution["status"] != "succeeded":
             phase["status"] = "failed"
 
     return phase

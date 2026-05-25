@@ -438,6 +438,7 @@ Read only what is relevant to the assigned task.
 - Skills: `.ai/skills/`
 - Review rubric: `.ai/rules/review-rubric.yml`
 - Security policy: `.ai/rules/security-policy.yml`
+- Validation policy: `.ai/rules/validation-policy.yml`
 - Merge policy: `.ai/rules/auto-merge-policy.yml`
 
 ## Scheduler Boundary
@@ -788,6 +789,22 @@ required_results:
   - role-specific validation
 failure_policy: return_to_pr_owner
 """,
+    "validation-policy": """version: 1
+defaults:
+  writer:
+    - python3 -m ai_harness validate --target .
+    - python3 -m unittest discover -s tests -v
+agents:
+  backend-implementer:
+    - python3 -m ai_harness validate --target .
+    - python3 -m unittest discover -s tests -v
+  frontend-implementer:
+    - python3 -m ai_harness validate --target .
+    - python3 -m unittest discover -s tests -v
+  ci-repair-agent:
+    - python3 -m ai_harness validate --target .
+    - python3 -m unittest discover -s tests -v
+""",
     "review-rubric": """version: 1
 finding_levels:
   - blocking
@@ -986,6 +1003,31 @@ SCHEMAS = {
             "file": {"type": "string"},
             "line": {"type": "integer"},
             "body": {"type": "string"},
+        },
+    },
+    "review_findings": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["findings"],
+        "additionalProperties": False,
+        "properties": {
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["severity", "status", "body"],
+                    "properties": {
+                        "id": {"type": "string"},
+                        "severity": {"enum": ["blocking", "major", "minor", "note"]},
+                        "status": {"type": "string"},
+                        "file": {"type": "string"},
+                        "line": {"type": "integer"},
+                        "pattern": {"type": "string"},
+                        "body": {"type": "string"},
+                    },
+                },
+            },
         },
     },
     "risk_approval": {

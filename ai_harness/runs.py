@@ -15,6 +15,7 @@ from .validation import (
     load_private_bindings,
     validate_scaffold,
 )
+from .yaml_lite import load_yaml
 
 
 class RunError(Exception):
@@ -102,7 +103,8 @@ def create_run(
         "state": state,
         "task_id": task.get("task_id", ""),
         "task_summary": task["summary"],
-        "validation_commands": [item["command"] for item in _validation_placeholders(agent_id, mode)],
+        "risk_level": str(task.get("risk_level", "medium")),
+        "validation_commands": _validation_commands(target, agent_id, mode),
         "created_at": _now(),
         "agent_doc": f".ai/agents/{agent_id}.md",
         "agent_doc_hash": f"sha256:{agent_hash}",
@@ -278,9 +280,12 @@ def normalize_issue_id(issue: str) -> str:
     return value or "issue-unknown"
 
 
-def _validation_placeholders(agent_id: str, mode: str) -> list[dict[str, str]]:
+def _validation_commands(target: Path, agent_id: str, mode: str) -> list[str]:
     if mode == "read_only":
         return []
+    policy_commands = _validation_policy_commands(target, agent_id, mode)
+    if policy_commands is not None:
+        return policy_commands
     if agent_id == "backend-implementer":
         commands = ["pnpm lint", "pnpm typecheck", "pnpm test backend"]
     elif agent_id == "frontend-implementer":
@@ -289,7 +294,35 @@ def _validation_placeholders(agent_id: str, mode: str) -> list[dict[str, str]]:
         commands = ["pnpm lint", "pnpm typecheck", "pnpm test"]
     else:
         commands = ["harness validate"]
-    return [{"command": command, "status": "not_run"} for command in commands]
+    return commands
+
+
+def _validation_policy_commands(target: Path, agent_id: str, mode: str) -> list[str] | None:
+    path = target / ".ai" / "rules" / "validation-policy.yml"
+    if not path.exists():
+        return None
+    policy = load_yaml(path)
+    if not isinstance(policy, dict):
+        return None
+    agents = policy.get("agents", {})
+    if isinstance(agents, dict) and agent_id in agents:
+        return _coerce_command_list(agents[agent_id], f"validation policy for {agent_id}")
+    defaults = policy.get("defaults", {})
+    if isinstance(defaults, dict) and mode in defaults:
+        return _coerce_command_list(defaults[mode], f"validation policy default {mode}")
+    return None
+
+
+def _coerce_command_list(value: Any, label: str) -> list[str]:
+    if not isinstance(value, list):
+        raise RunError(f"{label} must be a list of commands")
+    commands = []
+    for index, item in enumerate(value):
+        command = item.get("command") if isinstance(item, dict) else item
+        if not isinstance(command, str) or not command.strip():
+            raise RunError(f"{label}[{index}] must be a non-empty command string")
+        commands.append(command)
+    return commands
 
 
 def _issue_reference(issue_id: str) -> str:

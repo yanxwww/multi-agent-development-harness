@@ -16,6 +16,7 @@ Read only what is relevant to the assigned task.
 - Skills: `.ai/skills/`
 - Review rubric: `.ai/rules/review-rubric.yml`
 - Security policy: `.ai/rules/security-policy.yml`
+- Validation policy: `.ai/rules/validation-policy.yml`
 - Merge policy: `.ai/rules/auto-merge-policy.yml`
 
 ## Scheduler Boundary
