@@ -813,6 +813,68 @@ class HarnessCliTests(unittest.TestCase):
             self.assertIn("merge_command_started", trace)
             self.assertIn("merge_command_finished", trace)
 
+    def test_run_merge_command_removes_worktree_before_delete_branch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            self._init_git_repo(root)
+            task.write_text(json.dumps({"summary": "Merge cleanup test"}))
+            self.assertEqual(
+                main(
+                    [
+                        "create-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--agent",
+                        "backend-implementer",
+                        "--task",
+                        str(task),
+                        "--run-id",
+                        "run-merge-delete-worktree-001",
+                    ]
+                ),
+                0,
+            )
+            run_dir = root / ".ai" / "runs" / "run-merge-delete-worktree-001"
+            run = json.loads((run_dir / "run.json").read_text())
+            worktree = root / run["worktree"]
+            fake_gh = root / "fake-gh"
+            fake_gh.write_text("#!/bin/sh\ngit branch -D \"$3\"\necho merged \"$@\"\n")
+            fake_gh.chmod(0o755)
+            (run_dir / "merge_gate.json").write_text(json.dumps({"status": "passed", "merge_ready": True}))
+            (run_dir / "pr_execution.json").write_text(json.dumps({"status": "succeeded", "url": "https://example.test/pull/1"}))
+
+            self.assertEqual(
+                main(
+                    [
+                        "merge-command",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-merge-delete-worktree-001",
+                        "--method",
+                        "squash",
+                        "--delete-branch",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+            self.assertEqual(
+                main(["run-merge-command", "--target", str(root), "--run", "run-merge-delete-worktree-001", "--timeout", "5"]),
+                0,
+            )
+
+            execution = json.loads((run_dir / "merge_execution.json").read_text())
+            cleanup = json.loads((run_dir / "merge_worktree_cleanup.json").read_text())
+            self.assertEqual(execution["status"], "succeeded")
+            self.assertEqual(cleanup["status"], "removed")
+            self.assertFalse(worktree.exists())
+
     def test_run_merge_command_rejects_mutated_argv(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -901,11 +963,14 @@ class HarnessCliTests(unittest.TestCase):
             command = json.loads((run_dir / "github_checks_command.json").read_text())
             self.assertEqual(command["argv"][:3], [str(fake_gh), "pr", "checks"])
             self.assertIn("7", command["argv"])
-            self.assertIn("--watch", command["argv"])
+            self.assertNotIn("--watch", command["argv"])
+            self.assertIn("--watch", command["watch_argv"])
 
             self.assertEqual(main(["run-github-checks-command", "--target", str(root), "--run", "run-github-checks-001", "--timeout", "5"]), 0)
             execution = json.loads((run_dir / "github_checks_execution.json").read_text())
             self.assertEqual(execution["status"], "succeeded")
+            self.assertEqual(execution["watch_exit_code"], 0)
+            self.assertTrue((run_dir / "github_checks_watch_stdout.log").exists())
             ci = json.loads((run_dir / "ci_results.json").read_text())
             eval_results = json.loads((run_dir / "eval_results.json").read_text())
             self.assertEqual(ci["status"], "passed")

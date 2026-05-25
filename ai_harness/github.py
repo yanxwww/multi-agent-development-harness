@@ -108,20 +108,43 @@ def run_github_checks_command(
     _validate_command_fields(
         command,
         expected,
-        ["run_id", "agent_id", "executable", "selector", "watch", "interval", "argv", "display"],
+        [
+            "run_id",
+            "agent_id",
+            "executable",
+            "selector",
+            "watch",
+            "interval",
+            "argv",
+            "display",
+            "watch_argv",
+            "watch_display",
+        ],
         "GitHub checks command does not match rendered policy",
     )
     argv = command.get("argv")
     if not isinstance(argv, list) or not argv or not all(isinstance(item, str) for item in argv):
         raise GitHubError("GitHub checks command argv must be a non-empty string list")
+    watch_argv = command.get("watch_argv", [])
+    if not isinstance(watch_argv, list) or not all(isinstance(item, str) for item in watch_argv):
+        raise GitHubError("GitHub checks command watch_argv must be a string list")
 
     _append_trace(run_dir, {"event": "github_checks_command_started", "run_id": run_id})
+    watch_result = None
+    if command.get("watch", False):
+        watch_result = _run_attempt(watch_argv, target, timeout_seconds)
+        (run_dir / "github_checks_watch_stdout.log").write_text(watch_result["stdout"])
+        (run_dir / "github_checks_watch_stderr.log").write_text(watch_result["stderr"])
     result = _run_attempt(argv, target, timeout_seconds)
     (run_dir / "github_checks_stdout.log").write_text(result["stdout"])
     (run_dir / "github_checks_stderr.log").write_text(result["stderr"])
     error = ""
     checks: list[dict[str, Any]] = []
-    if result["timed_out"]:
+    if watch_result and watch_result["timed_out"]:
+        error = "GitHub checks watch command timed out"
+    elif watch_result and watch_result["exit_code"] not in {0, 1, 8}:
+        error = f"GitHub checks watch command exited with {watch_result['exit_code']}"
+    elif result["timed_out"]:
         error = "GitHub checks command timed out"
     elif result["exit_code"] not in {0, 8}:
         error = f"GitHub checks command exited with {result['exit_code']}"
@@ -152,12 +175,16 @@ def run_github_checks_command(
         "timeout_seconds": timeout_seconds,
         "exit_code": result["exit_code"],
         "timed_out": result["timed_out"],
+        "watch_exit_code": watch_result["exit_code"] if watch_result else None,
+        "watch_timed_out": watch_result["timed_out"] if watch_result else False,
         "duration_seconds": result["duration_seconds"],
         "check_count": len(checks),
         "ci_status": ci_results["status"],
         "eval_status": eval_results["status"],
         "stdout_log": "github_checks_stdout.log",
         "stderr_log": "github_checks_stderr.log",
+        "watch_stdout_log": "github_checks_watch_stdout.log" if watch_result else None,
+        "watch_stderr_log": "github_checks_watch_stderr.log" if watch_result else None,
         "created_at": _now(),
     }
     if error:
@@ -192,8 +219,17 @@ def _expected_checks_command(
         "--json",
         CHECK_FIELDS,
     ]
+    watch_argv = []
     if watch:
-        argv.extend(["--watch", "--interval", str(interval)])
+        watch_argv = [
+            executable,
+            "pr",
+            "checks",
+            selector,
+            "--watch",
+            "--interval",
+            str(interval),
+        ]
     return {
         "run_id": run_id,
         "agent_id": run.get("agent_id"),
@@ -203,6 +239,8 @@ def _expected_checks_command(
         "interval": interval,
         "argv": argv,
         "display": shlex.join(argv),
+        "watch_argv": watch_argv,
+        "watch_display": shlex.join(watch_argv) if watch_argv else "",
     }
 
 

@@ -182,6 +182,9 @@ def run_merge_command(target: Path, run_id: str, timeout_seconds: float) -> dict
     stderr_path = run_dir / "merge_stderr.log"
     started_at = _now()
     _append_trace(run_dir, {"event": "merge_command_started", "run_id": run_id})
+    cleanup = None
+    if command.get("delete_branch", False):
+        cleanup = _remove_run_worktree_before_branch_delete(target, run_dir, run, run_id)
     attempt = _run_attempt(argv, target, timeout_seconds)
     stdout_path.write_text(attempt["stdout"])
     stderr_path.write_text(attempt["stderr"])
@@ -198,6 +201,7 @@ def run_merge_command(target: Path, run_id: str, timeout_seconds: float) -> dict
         "finished_at": _now(),
         "stdout_log": "merge_stdout.log",
         "stderr_log": "merge_stderr.log",
+        "worktree_cleanup": "merge_worktree_cleanup.json" if cleanup else None,
     }
     (run_dir / "merge_execution.json").write_text(json.dumps(execution, indent=2) + "\n")
     _append_trace(
@@ -285,6 +289,68 @@ def _expected_merge_command(
         "argv": argv,
         "display": shlex.join(argv),
     }
+
+
+def _remove_run_worktree_before_branch_delete(
+    target: Path,
+    run_dir: Path,
+    run: dict[str, Any],
+    run_id: str,
+) -> dict[str, Any] | None:
+    worktree = run.get("worktree")
+    if not run.get("worktree_created") or not isinstance(worktree, str) or not worktree:
+        cleanup = {
+            "run_id": run_id,
+            "status": "skipped",
+            "reason": "run has no created worktree",
+            "created_at": _now(),
+        }
+        (run_dir / "merge_worktree_cleanup.json").write_text(json.dumps(cleanup, indent=2) + "\n")
+        return cleanup
+
+    worktree_path = target / worktree
+    if not worktree_path.exists():
+        cleanup = {
+            "run_id": run_id,
+            "status": "skipped",
+            "reason": "worktree path does not exist",
+            "worktree": worktree,
+            "created_at": _now(),
+        }
+        (run_dir / "merge_worktree_cleanup.json").write_text(json.dumps(cleanup, indent=2) + "\n")
+        return cleanup
+
+    status = subprocess.run(
+        ["git", "-C", str(worktree_path), "status", "--porcelain"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if status.returncode != 0:
+        raise PullRequestError(f"cannot inspect merge worktree before branch delete: {status.stderr.strip()}")
+    if status.stdout.strip():
+        raise PullRequestError("cannot remove merge worktree before branch delete: worktree has uncommitted changes")
+
+    result = subprocess.run(
+        ["git", "-C", str(target), "worktree", "remove", "--force", str(worktree_path)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    cleanup = {
+        "run_id": run_id,
+        "status": "removed" if result.returncode == 0 else "failed",
+        "worktree": worktree,
+        "exit_code": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "created_at": _now(),
+    }
+    (run_dir / "merge_worktree_cleanup.json").write_text(json.dumps(cleanup, indent=2) + "\n")
+    if result.returncode != 0:
+        raise PullRequestError(f"cannot remove merge worktree before branch delete: {result.stderr.strip()}")
+    _append_trace(run_dir, {"event": "merge_worktree_removed", "run_id": run_id, "worktree": worktree})
+    return cleanup
 
 
 def _load_writer_run(run_dir: Path, run_id: str) -> dict[str, Any]:
