@@ -16,5 +16,13 @@ __pycache__/
 !.ai/scheduler-workspaces/.gitkeep
 .ai/events/*
 !.ai/events/.gitkeep
+.ai/local-daemon/events/*
+!.ai/local-daemon/events/.gitkeep
+.ai/local-daemon/leases/*
+!.ai/local-daemon/leases/.gitkeep
+.ai/local-daemon/polls/*
+!.ai/local-daemon/polls/.gitkeep
+.ai/local-daemon/state.json
+.ai/local-daemon/*.log
 .ai/artifact_retention_report.json
 .ai/connector_contracts.json

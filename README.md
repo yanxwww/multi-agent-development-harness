@@ -9,7 +9,7 @@ The harness is intentionally runtime-blind at the scheduling layer:
 - Dispatcher-only connector bindings live in `.ai/private/assignments.yml`.
 - Codex CLI and Claude Code CLI are connector contracts in `.ai/connectors/*.yml`.
 - `AGENTS.md` is the only canonical repository-level instruction entry point.
-- `CLAUDE.md` is not committed; a future Claude Code adapter can bridge to `AGENTS.md` at run time.
+- `CLAUDE.md` is not committed; Claude Code connectors inject `AGENTS.md` explicitly at run time.
 
 ## Commands
 
@@ -53,6 +53,10 @@ python3 -m ai_harness run-integration-command --target . --run run-integration-0
 python3 -m ai_harness dispatch-run --target . --issue 123 --plan schedule_plan.json --run-id run-dispatch-001 --timeout 900 --retries 1 --commit-and-push --push-remote origin --prepare-pr-command --pr-base main --draft-pr
 python3 -m ai_harness automation-run --target . --issue 123 --scheduler-task scheduler_task.json --run-id run-automation-001 --timeout 900 --retries 1 --commit-and-push --prepare-pr-command --run-pr-command --github-checks --lifecycle --auto-review --auto-risk-approval --auto-repair --run-auto-repair --merge
 python3 -m ai_harness automation-daemon --target . --event-file "$GITHUB_EVENT_PATH" --run-id run-gh-001
+python3 -m ai_harness github-sync-poll --target . --run-id run-local-poll-001
+python3 -m ai_harness local-daemon --target . --run-id run-local-daemon --once
+python3 -m ai_harness local-daemon --target . --run-id run-local-daemon --execute
+python3 -m ai_harness github-status-sync --target . --event-id issue-42-ai-run --status planned --message "scheduler task ready"
 ```
 
 Installable entry point:
@@ -61,6 +65,20 @@ Installable entry point:
 pip install -e .
 harness init --target .
 ```
+
+## Local-First GitHub Sync
+
+GitHub is the synchronization surface, not the runtime host. Issues, PRs, CI status, and concise daemon comments live on GitHub. Codex CLI and Claude Code CLI still run on the local machine through the deterministic dispatcher.
+
+The hosted GitHub Actions workflow runs only read-only harness validation and event planning. It does not execute `automation-run`, create local worktrees, start Codex/Claude, push branches, or merge PRs. A local daemon does that from the developer machine:
+
+```bash
+python3 -m ai_harness local-daemon --target . --run-id run-local-daemon --execute
+```
+
+The local daemon polls `gh issue list` and `gh pr list`, creates local events under `.ai/local-daemon/events/`, records processed triggers in `.ai/local-daemon/state.json`, and can wake the full local automation chain for `ai:auto`, `ai:plan`, `ai:repair`, `ai:review`, `/ai run`, `/ai repair`, and `/ai status` triggers. Poll summaries are written to `.ai/local-daemon/polls/`. Runtime logs and state remain local and git-ignored; `github-status-sync` publishes only a short redacted status comment back to the source issue or PR.
+
+For long-running macOS operation, edit `.ai/local-daemon/launchd/com.ai-harness.local-daemon.plist`, replace `REPLACE_WITH_REPO_PATH`, and load it with launchd after `gh auth login` and local Codex/Claude credentials are configured.
 
 ## Writer Run Rule
 
@@ -122,7 +140,9 @@ Writer validation commands are selected from `.ai/rules/validation-policy.yml` w
 
 When `automation-run --auto-review` is set, the harness dispatches a read-only `pr-reviewer` run and copies its structured `review_findings.json` back to the source writer run before lifecycle gates. When `--auto-risk-approval` is set, high-risk writer runs dispatch `risk-approval-agent` and attach `risk_approval.json` before `risk-approval-gate`. When `--auto-repair --run-auto-repair` is set and lifecycle blocks, the harness renders the source run's `repair_schedule_plan.json`, dispatches that plan through a dedicated repair schedule run, executes the `ci-repair-agent` child through the normal connector/validation/PR gate chain, and writes `auto_repair_run.json` on the source run.
 
-`automation-daemon` converts GitHub event payloads into `.ai/events/<run-id>/scheduler_task.json` and `automation_daemon.json`. It defaults to a dry-run planning artifact so GitHub Actions can observe events safely; `--execute` feeds the generated scheduler task into `automation-run`.
+`automation-daemon` converts GitHub event payloads into `.ai/events/<run-id>/scheduler_task.json` and `automation_daemon.json`. The scaffolded GitHub Actions workflow invokes it only as a dry-run planning artifact so hosted GitHub can observe events safely without holding local runtime credentials. Local machines should use `local-daemon --execute` for runtime execution.
+
+`github-sync-poll` polls GitHub through the local `gh` CLI and converts issue/PR label or comment triggers into local daemon events. `local-daemon` runs that polling loop once or continuously and, when `--execute` is set locally, feeds new events into the full `automation-run` chain. `github-status-sync` posts a concise redacted status update back to the source issue or PR without uploading raw traces.
 
 `artifact-retention-report` scans `.ai/runs` for local-only runtime artifacts and secret-like content, then writes `.ai/artifact_retention_report.json`. The policy lives in `.ai/rules/artifact-retention.yml`; redaction findings are blocking, while runtime logs and prompts are local retention notes.
 
@@ -142,4 +162,4 @@ When `automation-run --auto-review` is set, the harness dispatches a read-only `
 
 ## Current MVP Boundaries
 
-This version creates and validates the repo contract, captures scheduler output from a real agent identity in a sanitized workspace, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, installs allowlisted runtime skills, validates connector permission contracts, renders deterministic connector/git/PR/GitHub-checks/integration/merge commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation policy, PR body, diff, commit, push, GitHub CI result artifacts, eval result artifacts, automated reviewer findings, branch ownership, autonomous high-risk approval, merge readiness, lifecycle-run orchestration, executable auto-repair dispatch, integration execution, merge execution, event-driven daemon planning, automation-run orchestration, artifact retention/redaction reporting, and skill evolution planning. It still relies on configured local CLI credentials and repository branch protection for hosted GitHub operations; it does not bypass those controls.
+This version creates and validates the repo contract, captures scheduler output from a real agent identity in a sanitized workspace, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, installs allowlisted runtime skills, validates connector permission contracts, renders deterministic connector/git/PR/GitHub-checks/integration/merge commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation policy, PR body, diff, commit, push, GitHub CI result artifacts, eval result artifacts, automated reviewer findings, branch ownership, autonomous high-risk approval, merge readiness, lifecycle-run orchestration, executable auto-repair dispatch, integration execution, merge execution, local-first GitHub sync polling, local daemon execution, redacted status sync, automation-run orchestration, artifact retention/redaction reporting, and skill evolution planning. It still relies on configured local CLI credentials and repository branch protection for hosted GitHub operations; it does not bypass those controls.
