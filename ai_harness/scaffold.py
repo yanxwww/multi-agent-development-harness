@@ -933,11 +933,12 @@ SCHEMAS = {
     "agent_result": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
+        "additionalProperties": False,
         "required": ["status", "summary", "evidence"],
         "properties": {
             "status": {"enum": ["succeeded", "failed", "blocked"]},
             "summary": {"type": "string"},
-            "evidence": {"type": "object"},
+            "evidence": {"type": "object", "additionalProperties": False, "properties": {}},
         },
     },
     "agent_task": {
