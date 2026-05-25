@@ -477,6 +477,7 @@ Read only what is relevant to the assigned task.
 - Security policy: `.ai/rules/security-policy.yml`
 - Validation policy: `.ai/rules/validation-policy.yml`
 - Merge policy: `.ai/rules/auto-merge-policy.yml`
+- Local daemon trigger policy: `.ai/rules/local-daemon.yml`
 
 ## Scheduler Boundary
 
@@ -841,6 +842,17 @@ agents:
   ci-repair-agent:
     - python3 -m ai_harness validate --target .
     - python3 -m unittest discover -s tests -v
+""",
+    "local-daemon": """version: 1
+label_actions:
+  ai:auto: run
+  ai:plan: plan
+  ai:repair: repair
+  ai:review: review
+comment_actions:
+  /ai run: run
+  /ai repair: repair
+  /ai status: status
 """,
     "review-rubric": """version: 1
 finding_levels:

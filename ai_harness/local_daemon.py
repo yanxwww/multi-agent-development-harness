@@ -18,13 +18,13 @@ class LocalDaemonError(Exception):
     pass
 
 
-LABEL_ACTIONS = {
+DEFAULT_LABEL_ACTIONS = {
     "ai:auto": "run",
     "ai:plan": "plan",
     "ai:repair": "repair",
     "ai:review": "review",
 }
-COMMENT_ACTIONS = {
+DEFAULT_COMMENT_ACTIONS = {
     "/ai run": "run",
     "/ai repair": "repair",
     "/ai status": "status",
@@ -55,7 +55,8 @@ def run_github_sync_poll(
         state = _load_state(root)
         processed = set(state.get("processed_event_ids", []))
         items = _load_github_items(target=target, executable=executable)
-        candidates = _trigger_events(items)
+        trigger_policy = _load_trigger_policy(target)
+        candidates = _trigger_events(items, trigger_policy)
 
         created_events: list[dict[str, Any]] = []
         skipped_events: list[dict[str, Any]] = []
@@ -291,8 +292,10 @@ def _run_gh_json(argv: list[str], cwd: Path) -> list[dict[str, Any]]:
     return value
 
 
-def _trigger_events(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _trigger_events(items: list[dict[str, Any]], policy: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
+    label_actions = policy["label_actions"]
+    comment_actions = policy["comment_actions"]
     for item in items:
         kind = str(item.get("kind", "issue"))
         number = item.get("number")
@@ -309,16 +312,57 @@ def _trigger_events(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if isinstance(labels, list):
             for label in labels:
                 label_name = label.get("name") if isinstance(label, dict) else label
-                if str(label_name) in LABEL_ACTIONS:
-                    events.append(_event(source=source, trigger=str(label_name), action=LABEL_ACTIONS[str(label_name)]))
+                if str(label_name) in label_actions:
+                    events.append(_event(source=source, trigger=str(label_name), action=label_actions[str(label_name)]))
         comments = item.get("comments", [])
         if isinstance(comments, list):
             for comment in comments:
                 body = comment.get("body", "") if isinstance(comment, dict) else ""
-                command = _comment_command(str(body))
+                command = _comment_command(str(body), comment_actions)
                 if command:
-                    events.append(_event(source=source, trigger=command, action=COMMENT_ACTIONS[command]))
+                    events.append(_event(source=source, trigger=command, action=comment_actions[command]))
     return events
+
+
+def _load_trigger_policy(target: Path) -> dict[str, dict[str, str]]:
+    path = target / ".ai" / "rules" / "local-daemon.yml"
+    if not path.exists():
+        return {
+            "label_actions": dict(DEFAULT_LABEL_ACTIONS),
+            "comment_actions": dict(DEFAULT_COMMENT_ACTIONS),
+        }
+    text = path.read_text()
+    policy = {
+        "label_actions": _parse_action_section(text, "label_actions"),
+        "comment_actions": _parse_action_section(text, "comment_actions"),
+    }
+    return policy
+
+
+def _parse_action_section(text: str, section: str) -> dict[str, str]:
+    actions: dict[str, str] = {}
+    in_section = False
+    section_indent = 0
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        content = raw.strip()
+        if indent == 0:
+            key, sep, rest = content.partition(":")
+            in_section = sep == ":" and key == section and not rest.strip()
+            section_indent = indent
+            continue
+        if not in_section:
+            continue
+        if indent <= section_indent:
+            in_section = False
+            continue
+        trigger, sep, action = content.rpartition(":")
+        if not sep or not trigger.strip() or not action.strip():
+            raise LocalDaemonError(f"{section} entries must use '<trigger>: <action>'")
+        actions[_strip_quotes(trigger.strip())] = _strip_quotes(action.strip())
+    return actions
 
 
 def _event(source: dict[str, Any], trigger: str, action: str) -> dict[str, Any]:
@@ -332,9 +376,15 @@ def _event(source: dict[str, Any], trigger: str, action: str) -> dict[str, Any]:
     }
 
 
-def _comment_command(body: str) -> str:
+def _comment_command(body: str, comment_actions: dict[str, str]) -> str:
     first_line = body.strip().splitlines()[0].strip() if body.strip() else ""
-    return first_line if first_line in COMMENT_ACTIONS else ""
+    return first_line if first_line in comment_actions else ""
+
+
+def _strip_quotes(value: str) -> str:
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    return value
 
 
 def _scheduler_task(event: dict[str, Any]) -> dict[str, Any]:

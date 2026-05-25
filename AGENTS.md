@@ -18,6 +18,7 @@ Read only what is relevant to the assigned task.
 - Security policy: `.ai/rules/security-policy.yml`
 - Validation policy: `.ai/rules/validation-policy.yml`
 - Merge policy: `.ai/rules/auto-merge-policy.yml`
+- Local daemon trigger policy: `.ai/rules/local-daemon.yml`
 
 ## Scheduler Boundary
 
