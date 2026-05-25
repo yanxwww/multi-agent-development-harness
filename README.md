@@ -55,7 +55,7 @@ python3 -m ai_harness automation-run --target . --issue 123 --scheduler-task sch
 python3 -m ai_harness automation-daemon --target . --event-file "$GITHUB_EVENT_PATH" --run-id run-gh-001
 python3 -m ai_harness github-sync-poll --target . --run-id run-local-poll-001
 python3 -m ai_harness local-daemon --target . --run-id run-local-daemon --once
-python3 -m ai_harness local-daemon --target . --run-id run-local-daemon --execute
+python3 -m ai_harness local-daemon --target . --run-id run-local-daemon --execute --status-sync
 python3 -m ai_harness github-status-sync --target . --event-id issue-42-ai-run --status planned --message "scheduler task ready"
 ```
 
@@ -73,10 +73,10 @@ GitHub is the synchronization surface, not the runtime host. Issues, PRs, CI sta
 The hosted GitHub Actions workflow runs only read-only harness validation and event planning. It does not execute `automation-run`, create local worktrees, start Codex/Claude, push branches, or merge PRs. A local daemon does that from the developer machine:
 
 ```bash
-python3 -m ai_harness local-daemon --target . --run-id run-local-daemon --execute
+python3 -m ai_harness local-daemon --target . --run-id run-local-daemon --execute --status-sync
 ```
 
-The local daemon polls `gh issue list` and `gh pr list`, creates local events under `.ai/local-daemon/events/`, records processed triggers in `.ai/local-daemon/state.json`, and can wake the full local automation chain for `ai:auto`, `ai:plan`, `ai:repair`, `ai:review`, `/ai run`, `/ai repair`, and `/ai status` triggers. Poll summaries are written to `.ai/local-daemon/polls/`. Runtime logs and state remain local and git-ignored; `github-status-sync` publishes only a short redacted status comment back to the source issue or PR.
+The local daemon polls `gh issue list` and `gh pr list`, creates local events under `.ai/local-daemon/events/`, records processed triggers in `.ai/local-daemon/state.json`, and can wake the full local automation chain for `ai:auto`, `ai:plan`, `ai:repair`, `ai:review`, `/ai run`, `/ai repair`, and `/ai status` triggers. Poll summaries are written to `.ai/local-daemon/polls/`. Each created event writes `event_result.json`; with `--status-sync`, the daemon also posts a short redacted planned or final status comment back to the source issue or PR. Runtime logs, traces, prompts, and connector output remain local and git-ignored.
 
 For long-running macOS operation, edit `.ai/local-daemon/launchd/com.ai-harness.local-daemon.plist`, replace `REPLACE_WITH_REPO_PATH`, and load it with launchd after `gh auth login` and local Codex/Claude credentials are configured.
 
@@ -100,7 +100,7 @@ The deterministic dispatcher validates the plan, resolves `agent_id -> connector
 
 `connector-contracts` validates connector permission profile contracts and writes `.ai/connector_contracts.json`. Codex read-only profiles must use a read-only sandbox, Codex writer profiles must use workspace-write, Claude profiles must use bare JSON-schema execution, and read-only profiles must not expose write-capable tools.
 
-`connector-command` renders the CLI command that a future process supervisor will execute. It writes `.ai/runs/<run-id>/connector_command.json` with `argv`, display text, connector id, connector profile, workspace, output schema, prompt file, and prompt hash. It does not execute Codex or Claude Code.
+`connector-command` renders the CLI command that `run-connector`, `dispatch-run`, or `automation-run` can execute. It writes `.ai/runs/<run-id>/connector_command.json` with `argv`, display text, connector id, connector profile, workspace, output schema, prompt file, and prompt hash. It does not execute Codex or Claude Code by itself.
 
 `run-connector` executes `connector_command.json` with a per-attempt timeout and retry count. For configured connector profiles, it re-derives the expected command from run metadata before execution and rejects mutated command artifacts. It verifies the prompt hash, passes the prompt to the connector process over stdin, and writes `stdout.log`, `stderr.log`, per-attempt logs, `connector_events.jsonl` for JSON stdout lines, `connector_execution.json`, and trace events in `trace.jsonl`.
 
@@ -142,7 +142,7 @@ When `automation-run --auto-review` is set, the harness dispatches a read-only `
 
 `automation-daemon` converts GitHub event payloads into `.ai/events/<run-id>/scheduler_task.json` and `automation_daemon.json`. The scaffolded GitHub Actions workflow invokes it only as a dry-run planning artifact so hosted GitHub can observe events safely without holding local runtime credentials. Local machines should use `local-daemon --execute` for runtime execution.
 
-`github-sync-poll` polls GitHub through the local `gh` CLI and converts issue/PR label or comment triggers into local daemon events. `local-daemon` runs that polling loop once or continuously and, when `--execute` is set locally, feeds new events into the full `automation-run` chain. `github-status-sync` posts a concise redacted status update back to the source issue or PR without uploading raw traces.
+`github-sync-poll` polls GitHub through the local `gh` CLI and converts issue/PR label or comment triggers into local daemon events. `local-daemon` runs that polling loop once or continuously and, when `--execute` is set locally, feeds new events into the full `automation-run` chain. With `--status-sync`, both commands call the deterministic `github-status-sync` path and write status results into each event's `event_result.json`. `github-status-sync` posts a concise redacted status update back to the source issue or PR without uploading raw traces.
 
 `artifact-retention-report` scans `.ai/runs` for local-only runtime artifacts and secret-like content, then writes `.ai/artifact_retention_report.json`. The policy lives in `.ai/rules/artifact-retention.yml`; redaction findings are blocking, while runtime logs and prompts are local retention notes.
 
@@ -162,4 +162,4 @@ When `automation-run --auto-review` is set, the harness dispatches a read-only `
 
 ## Current MVP Boundaries
 
-This version creates and validates the repo contract, captures scheduler output from a real agent identity in a sanitized workspace, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, installs allowlisted runtime skills, validates connector permission contracts, renders deterministic connector/git/PR/GitHub-checks/integration/merge commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation policy, PR body, diff, commit, push, GitHub CI result artifacts, eval result artifacts, automated reviewer findings, branch ownership, autonomous high-risk approval, merge readiness, lifecycle-run orchestration, executable auto-repair dispatch, integration execution, merge execution, local-first GitHub sync polling, local daemon execution, redacted status sync, automation-run orchestration, artifact retention/redaction reporting, and skill evolution planning. It still relies on configured local CLI credentials and repository branch protection for hosted GitHub operations; it does not bypass those controls.
+This version creates and validates the repo contract, captures scheduler output from a real agent identity in a sanitized workspace, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, installs allowlisted runtime skills, validates connector permission contracts, renders deterministic connector/git/PR/GitHub-checks/integration/merge commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation policy, PR body, diff, commit, push, GitHub CI result artifacts, eval result artifacts, automated reviewer findings, branch ownership, autonomous high-risk approval, merge readiness, lifecycle-run orchestration, executable auto-repair dispatch, integration execution, merge execution, local-first GitHub sync polling, local daemon execution, per-event status results, redacted status sync, automation-run orchestration, artifact retention/redaction reporting, and skill evolution planning. It still relies on configured local CLI credentials and repository branch protection for hosted GitHub operations; it does not bypass those controls.

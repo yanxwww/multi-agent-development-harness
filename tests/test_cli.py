@@ -29,7 +29,9 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue((root / ".ai" / "local-daemon" / "polls" / ".gitkeep").exists())
             launchd = root / ".ai" / "local-daemon" / "launchd" / "com.ai-harness.local-daemon.plist"
             self.assertTrue(launchd.exists())
-            self.assertIn("--execute", launchd.read_text())
+            launchd_text = launchd.read_text()
+            self.assertIn("--execute", launchd_text)
+            self.assertIn("--status-sync", launchd_text)
             self.assertTrue((root / ".github" / "workflows" / "ai-harness-automation.yml").exists())
             workflow = (root / ".github" / "workflows" / "ai-harness-automation.yml").read_text()
             self.assertNotIn("github.event.inputs.execute", workflow)
@@ -2583,6 +2585,72 @@ class HarnessCliTests(unittest.TestCase):
                 1,
             )
             self.assertFalse((root / ".ai" / "local-daemon" / "polls" / "run-local-poll-locked.json").exists())
+
+    def test_github_sync_poll_status_sync_posts_planned_comment_and_event_result(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            calls_log = root / "gh-calls.jsonl"
+            fake_gh = root / "fake-gh"
+            issues = [
+                {
+                    "number": 42,
+                    "title": "Build local status sync",
+                    "body": "Run this locally.",
+                    "url": "https://github.com/example/repo/issues/42",
+                    "updatedAt": "2026-05-26T01:02:03Z",
+                    "labels": [{"name": "ai:plan"}],
+                    "comments": [],
+                }
+            ]
+            script = (
+                "import json,sys\n"
+                f"issues={issues!r}\n"
+                f"log={str(calls_log)!r}\n"
+                "args=sys.argv[1:]\n"
+                "open(log, 'a').write(json.dumps(args) + '\\n')\n"
+                "if args[:2] == ['issue', 'list']:\n"
+                "    print(json.dumps(issues))\n"
+                "elif args[:2] == ['pr', 'list']:\n"
+                "    print('[]')\n"
+                "elif args[:2] == ['issue', 'comment']:\n"
+                "    print('https://github.com/example/repo/issues/42#issuecomment-1')\n"
+                "else:\n"
+                "    print('[]')\n"
+            )
+            fake_gh.write_text(f"#!{sys.executable}\n{script}")
+            fake_gh.chmod(0o755)
+
+            self.assertEqual(
+                main(
+                    [
+                        "github-sync-poll",
+                        "--target",
+                        str(root),
+                        "--run-id",
+                        "run-local-poll-status-001",
+                        "--executable",
+                        str(fake_gh),
+                        "--status-sync",
+                    ]
+                ),
+                0,
+            )
+
+            event_dir = root / ".ai" / "local-daemon" / "events" / "issue-42-ai-plan"
+            result = json.loads((event_dir / "event_result.json").read_text())
+            self.assertEqual(result["status"], "planned")
+            self.assertEqual(result["status_sync"]["status"], "succeeded")
+            self.assertEqual(result["status_sync"]["source"]["number"], 42)
+            body = (event_dir / "status_comment.md").read_text()
+            self.assertIn("Status: planned", body)
+            self.assertIn("scheduler task", body)
+            self.assertNotIn("trace.jsonl", body)
+            self.assertNotIn("stdout.log", body)
+            calls = [json.loads(line) for line in calls_log.read_text().splitlines()]
+            self.assertIn(["issue", "comment", "42", "--body-file", str((event_dir / "status_comment.md").resolve())], calls)
+            poll = json.loads((root / ".ai" / "local-daemon" / "polls" / "run-local-poll-status-001.json").read_text())
+            self.assertEqual(poll["created_events"][0]["status_sync"]["status"], "succeeded")
 
     def test_github_status_sync_comments_without_raw_trace(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -991,6 +991,7 @@ LOCAL_DAEMON_LAUNCHD_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
     <string>--run-id</string>
     <string>run-local-daemon</string>
     <string>--execute</string>
+    <string>--status-sync</string>
   </array>
   <key>WorkingDirectory</key>
   <string>REPLACE_WITH_REPO_PATH</string>
