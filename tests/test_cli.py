@@ -24,6 +24,7 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue((root / ".ai" / "schemas" / "review_findings.schema.json").exists())
             self.assertTrue((root / ".ai" / "rules" / "validation-policy.yml").exists())
             self.assertTrue((root / ".ai" / "rules" / "artifact-retention.yml").exists())
+            self.assertTrue((root / ".ai" / "rules" / "local-daemon.yml").exists())
             self.assertTrue((root / ".ai" / "local-daemon" / "events" / ".gitkeep").exists())
             self.assertTrue((root / ".ai" / "local-daemon" / "leases" / ".gitkeep").exists())
             self.assertTrue((root / ".ai" / "local-daemon" / "polls" / ".gitkeep").exists())
@@ -2518,6 +2519,75 @@ class HarnessCliTests(unittest.TestCase):
             )
             poll2 = json.loads((root / ".ai" / "local-daemon" / "polls" / "run-local-poll-002.json").read_text())
             self.assertEqual(poll2["created_event_count"], 0)
+
+    def test_github_sync_poll_uses_configurable_trigger_policy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            (root / ".ai" / "rules" / "local-daemon.yml").write_text(
+                "\n".join(
+                    [
+                        "version: 1",
+                        "label_actions:",
+                        "  ai:custom: review",
+                        "comment_actions:",
+                        "  /ai custom: repair",
+                        "",
+                    ]
+                )
+            )
+            fake_gh = root / "fake-gh"
+            issues = [
+                {
+                    "number": 21,
+                    "title": "Custom trigger policy",
+                    "body": "Run this locally.",
+                    "url": "https://github.com/example/repo/issues/21",
+                    "updatedAt": "2026-05-26T01:02:03Z",
+                    "labels": [{"name": "ai:custom"}, {"name": "ai:auto"}],
+                    "comments": [{"body": "/ai run"}],
+                },
+                {
+                    "number": 22,
+                    "title": "Custom comment trigger policy",
+                    "body": "Run this locally.",
+                    "url": "https://github.com/example/repo/issues/22",
+                    "updatedAt": "2026-05-26T01:02:03Z",
+                    "labels": [],
+                    "comments": [{"body": "/ai custom"}],
+                },
+            ]
+            script = (
+                "import json,sys; "
+                f"issues={issues!r}; "
+                "args=sys.argv[1:]; "
+                "print(json.dumps(issues if args[:2]==['issue','list'] else []));"
+            )
+            fake_gh.write_text(f"#!{sys.executable}\n{script}\n")
+            fake_gh.chmod(0o755)
+
+            self.assertEqual(
+                main(
+                    [
+                        "github-sync-poll",
+                        "--target",
+                        str(root),
+                        "--run-id",
+                        "run-local-policy-001",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+
+            poll = json.loads((root / ".ai" / "local-daemon" / "polls" / "run-local-policy-001.json").read_text())
+            created = {event["event_id"]: event for event in poll["created_events"]}
+            self.assertEqual(set(created), {"issue-21-ai-custom", "issue-22-ai-custom"})
+            self.assertEqual(created["issue-21-ai-custom"]["action"], "review")
+            self.assertEqual(created["issue-22-ai-custom"]["action"], "repair")
+            task = json.loads((root / ".ai" / "local-daemon" / "events" / "issue-21-ai-custom" / "scheduler_task.json").read_text())
+            self.assertEqual(task["action"], "review")
 
     def test_local_daemon_once_runs_github_sync_poll(self):
         with tempfile.TemporaryDirectory() as temp:
