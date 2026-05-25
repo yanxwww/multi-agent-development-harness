@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sys
 import tempfile
@@ -96,6 +97,11 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(run["worktree"], ".worktrees/run-20260523-001-backend-implementer")
             self.assertTrue((run_dir / "trace.jsonl").exists())
             self.assertTrue((run_dir / "evidence.json").exists())
+            prompt = (run_dir / "prompt.md").read_text()
+            self.assertIn("Run ID: run-20260523-001", prompt)
+            self.assertIn("Agent ID: backend-implementer", prompt)
+            self.assertIn("Add API", prompt)
+            self.assertIn('"acceptance": [', prompt)
 
     def test_create_run_worktree_failure_does_not_leave_stale_run_dir(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -321,6 +327,9 @@ class HarnessCliTests(unittest.TestCase):
             self.assertIn("--cd", command["argv"])
             self.assertIn(".worktrees/run-command-001-backend-implementer", command["display"])
             self.assertIn(".ai/schemas/agent_result.schema.json", command["display"])
+            self.assertEqual(command["prompt_file"], ".ai/runs/run-command-001/prompt.md")
+            prompt = root / command["prompt_file"]
+            self.assertEqual(command["prompt_sha256"], hashlib.sha256(prompt.read_bytes()).hexdigest())
 
     def test_connector_command_renders_claude_readonly_command(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -353,6 +362,9 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(command["argv"][:3], ["claude", "--bare", "-p"])
             self.assertIn("--append-system-prompt-file", command["argv"])
             self.assertIn("AGENTS.md", command["argv"])
+            self.assertEqual(command["prompt_file"], ".ai/runs/run-command-002/prompt.md")
+            prompt = root / command["prompt_file"]
+            self.assertEqual(command["prompt_sha256"], hashlib.sha256(prompt.read_bytes()).hexdigest())
 
     def test_run_connector_captures_stdout_stderr_json_events_and_trace(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -453,6 +465,58 @@ class HarnessCliTests(unittest.TestCase):
             (run_dir / "connector_command.json").write_text(json.dumps(command))
             self.assertEqual(main(["run-connector", "--target", str(root), "--run", "run-exec-004", "--timeout", "5"]), 0)
             self.assertEqual((run_dir / "stdout.log").read_text().strip(), "workspace")
+
+    def test_run_connector_passes_prompt_file_to_stdin(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_run(root, "run-exec-005")
+            prompt = run_dir / "prompt.md"
+            prompt.write_text("PROMPT_SENTINEL\n")
+            script = (
+                "import json, sys\n"
+                "data = sys.stdin.read()\n"
+                "print(json.dumps({'event':'prompt_seen','has_sentinel':'PROMPT_SENTINEL' in data}))\n"
+                "raise SystemExit(0 if 'PROMPT_SENTINEL' in data else 2)\n"
+            )
+            command = {
+                "run_id": "run-exec-005",
+                "agent_id": "backend-implementer",
+                "connector": "test-connector",
+                "profile": "test-profile",
+                "prompt_file": ".ai/runs/run-exec-005/prompt.md",
+                "prompt_sha256": hashlib.sha256(prompt.read_bytes()).hexdigest(),
+                "argv": [sys.executable, "-c", script],
+            }
+            (run_dir / "connector_command.json").write_text(json.dumps(command))
+
+            self.assertEqual(main(["run-connector", "--target", str(root), "--run", "run-exec-005", "--timeout", "5"]), 0)
+
+            execution = json.loads((run_dir / "connector_execution.json").read_text())
+            self.assertEqual(execution["status"], "succeeded")
+            self.assertEqual(execution["stdin_file"], ".ai/runs/run-exec-005/prompt.md")
+            events = (run_dir / "connector_events.jsonl").read_text().splitlines()
+            self.assertTrue(json.loads(events[0])["has_sentinel"])
+
+    def test_run_connector_rejects_prompt_hash_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_run(root, "run-exec-006")
+            prompt = run_dir / "prompt.md"
+            prompt.write_text("original prompt\n")
+            command = {
+                "run_id": "run-exec-006",
+                "agent_id": "backend-implementer",
+                "connector": "test-connector",
+                "profile": "test-profile",
+                "prompt_file": ".ai/runs/run-exec-006/prompt.md",
+                "prompt_sha256": hashlib.sha256(prompt.read_bytes()).hexdigest(),
+                "argv": [sys.executable, "-c", "print('should not run')"],
+            }
+            prompt.write_text("mutated prompt\n")
+            (run_dir / "connector_command.json").write_text(json.dumps(command))
+
+            self.assertEqual(main(["run-connector", "--target", str(root), "--run", "run-exec-006", "--timeout", "5"]), 1)
+            self.assertFalse((run_dir / "connector_execution.json").exists())
 
     def test_run_connector_rejects_mutated_known_connector_command(self):
         with tempfile.TemporaryDirectory() as temp:

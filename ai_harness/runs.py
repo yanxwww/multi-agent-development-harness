@@ -145,6 +145,7 @@ def create_run(
         (run_dir / "binding.json").write_text(json.dumps(binding, indent=2) + "\n")
         (run_dir / "run.json").write_text(json.dumps(run, indent=2) + "\n")
         (run_dir / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+        (run_dir / "prompt.md").write_text(_render_run_prompt(run, task))
         (run_dir / "trace.jsonl").write_text(json.dumps({"ts": _now(), "event": "run_created", "run_id": run_id}) + "\n")
     except Exception:
         if run_dir.exists():
@@ -227,6 +228,44 @@ def render_pr_body(target: Path, run_id: str) -> Path:
     body_path = run_dir / "pr-body.md"
     body_path.write_text(body)
     return body_path
+
+
+def _render_run_prompt(run: dict[str, Any], task: dict[str, Any]) -> str:
+    mode = run.get("mode", "")
+    boundary = "Do not modify repository files." if mode == "read_only" else (
+        "Modify only files required for this task in the assigned workspace. "
+        "Do not commit, push, create pull requests, merge branches, or bypass gates."
+    )
+    task_json = json.dumps(task, indent=2, ensure_ascii=False)
+    return f"""# Agent Run Prompt
+
+## Run
+
+- Run ID: {run.get("run_id", "")}
+- Agent ID: {run.get("agent_id", "")}
+- Mode: {mode}
+- Issue: {run.get("issue_reference", run.get("issue_id", ""))}
+- Branch: {run.get("branch", "") or "none"}
+- Worktree: {run.get("worktree", "") or "."}
+- Agent doc: {run.get("agent_doc", "")}
+
+## Instructions
+
+- Follow AGENTS.md and the assigned agent identity document.
+- Use only the role skills and permissions exposed for this run.
+- {boundary}
+- Return the final answer as JSON matching the output schema supplied by the connector command.
+
+## Task
+
+{run.get("task_summary", "")}
+
+## Task JSON
+
+```json
+{task_json}
+```
+"""
 
 
 def normalize_issue_id(issue: str) -> str:
