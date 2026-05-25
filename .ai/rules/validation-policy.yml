@@ -1,0 +1,15 @@
+version: 1
+defaults:
+  writer:
+    - python3 -m ai_harness validate --target .
+    - python3 -m unittest discover -s tests -v
+agents:
+  backend-implementer:
+    - python3 -m ai_harness validate --target .
+    - python3 -m unittest discover -s tests -v
+  frontend-implementer:
+    - python3 -m ai_harness validate --target .
+    - python3 -m unittest discover -s tests -v
+  ci-repair-agent:
+    - python3 -m ai_harness validate --target .
+    - python3 -m unittest discover -s tests -v

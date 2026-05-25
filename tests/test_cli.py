@@ -21,6 +21,8 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue((root / ".ai" / "agents" / "scheduler-agent.md").exists())
             self.assertTrue((root / ".ai" / "agents" / "risk-approval-agent.md").exists())
             self.assertTrue((root / ".ai" / "schemas" / "schedule_plan.schema.json").exists())
+            self.assertTrue((root / ".ai" / "schemas" / "review_findings.schema.json").exists())
+            self.assertTrue((root / ".ai" / "rules" / "validation-policy.yml").exists())
             agent_result_schema = json.loads((root / ".ai" / "schemas" / "agent_result.schema.json").read_text())
             self.assertFalse(agent_result_schema["additionalProperties"])
             self.assertFalse(agent_result_schema["properties"]["evidence"]["additionalProperties"])
@@ -133,6 +135,51 @@ class HarnessCliTests(unittest.TestCase):
                 1,
             )
             self.assertFalse((root / ".ai" / "runs" / "run-worktree-fails").exists())
+
+    def test_create_run_uses_validation_policy_and_records_risk_level(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            (root / ".ai" / "rules" / "validation-policy.yml").write_text(
+                "\n".join(
+                    [
+                        "version: 1",
+                        "defaults:",
+                        "  writer:",
+                        "    - default writer validation",
+                        "agents:",
+                        "  backend-implementer:",
+                        "    - backend policy validation",
+                        "",
+                    ]
+                )
+            )
+            task.write_text(json.dumps({"summary": "High risk backend change", "risk_level": "high"}))
+
+            self.assertEqual(
+                main(
+                    [
+                        "create-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--agent",
+                        "backend-implementer",
+                        "--task",
+                        str(task),
+                        "--run-id",
+                        "run-policy-001",
+                        "--no-worktree",
+                    ]
+                ),
+                0,
+            )
+
+            run = json.loads((root / ".ai" / "runs" / "run-policy-001" / "run.json").read_text())
+            self.assertEqual(run["risk_level"], "high")
+            self.assertEqual(run["validation_commands"], ["backend policy validation"])
 
     def test_create_run_rejects_unsafe_run_id(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1956,6 +2003,155 @@ class HarnessCliTests(unittest.TestCase):
             self.assertFalse(any(path.startswith(".agents/skills/") for path in committed_paths))
             self.assertFalse(any(path.startswith(".claude/skills/") for path in committed_paths))
 
+    def test_scheduler_run_executes_scheduler_agent_and_writes_schedule_plan(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "scheduler_task.json"
+            main(["init", "--target", str(root)])
+            self._install_multi_output_test_connector(root)
+            self._bind_agent_to_test_connector(root, "scheduler-agent")
+            task.write_text(json.dumps({"summary": "Plan a small backend task"}))
+
+            self.assertEqual(
+                main(
+                    [
+                        "scheduler-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--task",
+                        str(task),
+                        "--run-id",
+                        "run-scheduler-001",
+                        "--timeout",
+                        "5",
+                    ]
+                ),
+                0,
+            )
+
+            run_dir = root / ".ai" / "runs" / "run-scheduler-001"
+            plan = json.loads((run_dir / "schedule_plan.json").read_text())
+            run = json.loads((run_dir / "run.json").read_text())
+            command = json.loads((run_dir / "connector_command.json").read_text())
+            self.assertEqual(run["agent_id"], "scheduler-agent")
+            self.assertEqual(run["mode"], "read_only")
+            self.assertEqual(command["output_schema"], ".ai/schemas/schedule_plan.schema.json")
+            self.assertEqual(plan["run_plan"][0]["agent_id"], "backend-implementer")
+            self.assertNotIn("connector", json.dumps(plan))
+
+    def test_automation_run_can_start_from_scheduler_task(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "scheduler_task.json"
+            main(["init", "--target", str(root)])
+            self._install_multi_output_test_connector(root)
+            self._bind_agent_to_test_connector(root, "scheduler-agent")
+            self._bind_agent_to_test_connector(root, "backend-implementer")
+            self._init_git_repo(root)
+            task.write_text(json.dumps({"summary": "Plan and implement a small backend task"}))
+
+            self.assertEqual(
+                main(
+                    [
+                        "automation-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--scheduler-task",
+                        str(task),
+                        "--run-id",
+                        "run-automation-scheduled-001",
+                        "--validation-mode",
+                        "skip",
+                        "--timeout",
+                        "5",
+                    ]
+                ),
+                0,
+            )
+
+            scheduler_dir = root / ".ai" / "runs" / "run-automation-scheduled-001-scheduler"
+            schedule_dir = root / ".ai" / "runs" / "run-automation-scheduled-001"
+            child_dir = root / ".ai" / "runs" / "run-automation-scheduled-001-T-auto-backend-implementer"
+            summary = json.loads((schedule_dir / "automation_run.json").read_text())
+            self.assertEqual(summary["status"], "succeeded")
+            self.assertEqual(summary["scheduler_run"]["run_id"], "run-automation-scheduled-001-scheduler")
+            self.assertTrue((scheduler_dir / "schedule_plan.json").exists())
+            self.assertTrue((child_dir / "connector_execution.json").exists())
+
+    def test_automation_run_can_execute_review_risk_and_repair_followups(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            self._install_multi_output_test_connector(root)
+            self._bind_agent_to_test_connector(root, "backend-implementer")
+            self._bind_agent_to_test_connector(root, "pr-reviewer")
+            self._bind_agent_to_test_connector(root, "risk-approval-agent")
+            self._init_git_repo(root)
+            plan = root / "automation_followup_plan.json"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T-followup",
+                                "mode": "writer",
+                                "depends_on": [],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "high",
+                                "success_criteria": ["Connector succeeds"],
+                            }
+                        ],
+                        "blocked": [],
+                        "risk_notes": ["High risk must be approved by the risk approval agent."],
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "automation-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-automation-followup-001",
+                        "--validation-mode",
+                        "skip",
+                        "--timeout",
+                        "5",
+                        "--lifecycle",
+                        "--auto-review",
+                        "--auto-risk-approval",
+                        "--auto-repair",
+                    ]
+                ),
+                1,
+            )
+
+            schedule_dir = root / ".ai" / "runs" / "run-automation-followup-001"
+            child_run_id = "run-automation-followup-001-T-followup-backend-implementer"
+            child_dir = root / ".ai" / "runs" / child_run_id
+            summary = json.loads((schedule_dir / "automation_run.json").read_text())
+            child = summary["children"][0]
+            self.assertEqual(child["review_agent_status"], "succeeded")
+            self.assertEqual(child["risk_approval_agent_status"], "succeeded")
+            self.assertEqual(json.loads((child_dir / "review_findings.json").read_text())["findings"], [])
+            self.assertEqual(json.loads((child_dir / "risk_approval.json").read_text())["source_run_id"], child_run_id)
+            self.assertEqual(json.loads((child_dir / "risk_approval_gate.json").read_text())["status"], "passed")
+            repair_plan = json.loads((child_dir / "repair_schedule_plan.json").read_text())
+            self.assertEqual(repair_plan["run_plan"][0]["agent_id"], "ci-repair-agent")
+            self.assertEqual(summary["status"], "failed")
+
     def test_automation_run_writes_top_level_summary(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -2385,6 +2581,56 @@ class HarnessCliTests(unittest.TestCase):
             "  backend-implementer:\n    connector: test-cli\n    profile: test-profile\n",
         )
         assignments.write_text(text)
+
+    def _install_multi_output_test_connector(self, root: Path) -> None:
+        plan = {
+            "run_plan": [
+                {
+                    "agent_id": "backend-implementer",
+                    "task_id": "T-auto",
+                    "mode": "writer",
+                    "depends_on": [],
+                    "expected_output": "branch_pr",
+                    "requires_pr": True,
+                    "risk_level": "medium",
+                    "success_criteria": ["Connector succeeds"],
+                }
+            ],
+            "blocked": [],
+            "risk_notes": [],
+        }
+        code = (
+            "import json,re,sys; "
+            "schema=sys.argv[1] if len(sys.argv)>1 else ''; "
+            "prompt=sys.stdin.read(); "
+            "match=re.search(r'\"source_run_id\"\\s*:\\s*\"([^\"]+)\"', prompt); "
+            "source=match.group(1) if match else 'unknown'; "
+            f"plan={plan!r}; "
+            "review={'findings':[]}; "
+            "risk={'status':'approved','approver_agent_id':'risk-approval-agent','source_run_id':source,'risk_level':'high','rationale':'Automated test approval.'}; "
+            "agent={'status':'succeeded','summary':'ok','evidence':{}}; "
+            "value=({'result':'```json\\n'+json.dumps(plan)+'\\n```'} if schema.endswith('schedule_plan.schema.json') "
+            "else review if schema.endswith('review_findings.schema.json') "
+            "else risk if schema.endswith('risk_approval.schema.json') "
+            "else agent); "
+            "print(json.dumps(value))"
+        )
+        connector = root / ".ai" / "connectors" / "test-cli.yml"
+        connector.write_text(
+            "\n".join(
+                [
+                    "id: test-cli",
+                    "version: 1",
+                    f"executable: {sys.executable}",
+                    "profiles:",
+                    "  test-profile:",
+                    "    mode: test",
+                    "command_templates:",
+                    f"  test-profile: {sys.executable} -c {json.dumps(code)} {{output_schema}}",
+                    "",
+                ]
+            )
+        )
 
     def _bind_agent_to_test_connector(self, root: Path, agent_id: str) -> None:
         assignments = root / ".ai" / "private" / "assignments.yml"

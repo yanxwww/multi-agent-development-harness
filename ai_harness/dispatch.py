@@ -56,8 +56,7 @@ def dispatch_plan(
         raise DispatchError(f"schedule plan does not exist: {plan_path}")
 
     plan = json.loads(plan_path.read_text())
-    _validate_schedule_plan(plan)
-    _validate_dependency_graph(plan["run_plan"])
+    validate_schedule_plan_document(plan)
     catalog = load_agent_catalog(target).get("agents", {})
     bindings = load_private_bindings(target).get("bindings", {})
     for item in plan["run_plan"]:
@@ -148,6 +147,11 @@ def dispatch_plan(
             shutil.rmtree(schedule_dir)
         raise
     return schedule_dir
+
+
+def validate_schedule_plan_document(plan: Any) -> None:
+    _validate_schedule_plan(plan)
+    _validate_dependency_graph(plan["run_plan"])
 
 
 def _validate_schedule_plan(plan: Any) -> None:

@@ -32,6 +32,7 @@ from .orchestrator import dispatch_run
 from .pull_requests import render_merge_command, render_pr_command, run_merge_command, run_pr_command
 from .runs import create_run, render_pr_body
 from .scaffold import init_scaffold
+from .scheduler import run_scheduler
 from .skill_sync import sync_run_skills
 from .validation import validate_scaffold
 
@@ -83,6 +84,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Prepare dispatch metadata without creating git worktrees.",
     )
+
+    scheduler_run_parser = subparsers.add_parser("scheduler-run", help="Run scheduler-agent and capture a SchedulePlan.")
+    scheduler_run_parser.add_argument("--target", default=".", help="Target repository root.")
+    scheduler_run_parser.add_argument("--issue", required=True, help="Issue id, such as 123 or issue-123.")
+    scheduler_run_parser.add_argument("--task", required=True, help="Scheduler task JSON.")
+    scheduler_run_parser.add_argument("--run-id", required=True, help="Scheduler run id.")
+    scheduler_run_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per scheduler attempt.")
+    scheduler_run_parser.add_argument("--retries", type=int, default=0, help="Retry count after failed scheduler attempts.")
 
     pr_parser = subparsers.add_parser("pr-body", help="Render a PR body from a run evidence bundle.")
     pr_parser.add_argument("--target", default=".", help="Target repository root.")
@@ -274,7 +283,9 @@ def build_parser() -> argparse.ArgumentParser:
     automation_run_parser = subparsers.add_parser("automation-run", help="Run the deterministic automation lifecycle from a SchedulePlan.")
     automation_run_parser.add_argument("--target", default=".", help="Target repository root.")
     automation_run_parser.add_argument("--issue", required=True, help="Issue id, such as 123 or issue-123.")
-    automation_run_parser.add_argument("--plan", required=True, help="Path to SchedulePlan JSON.")
+    automation_run_parser.add_argument("--plan", help="Path to SchedulePlan JSON.")
+    automation_run_parser.add_argument("--scheduler-task", help="Task JSON for scheduler-agent. Mutually exclusive with --plan.")
+    automation_run_parser.add_argument("--scheduler-run-id", help="Explicit scheduler run id. Defaults to <run-id>-scheduler.")
     automation_run_parser.add_argument("--run-id", required=True, help="Schedule run id.")
     automation_run_parser.add_argument("--base-ref", default="HEAD", help="Git base ref for worktree creation.")
     automation_run_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per deterministic command.")
@@ -292,6 +303,12 @@ def build_parser() -> argparse.ArgumentParser:
     automation_run_parser.add_argument("--checks-watch", action="store_true", help="Wait for GitHub checks when --github-checks is set.")
     automation_run_parser.add_argument("--checks-interval", type=int, default=10, help="Polling interval for --checks-watch.")
     automation_run_parser.add_argument("--lifecycle", action="store_true", help="Run CI/Eval, review, risk, merge, and skill gates.")
+    automation_run_parser.add_argument("--auto-review", action="store_true", help="Run pr-reviewer and attach review_findings.json before lifecycle gates.")
+    automation_run_parser.add_argument("--auto-risk-approval", action="store_true", help="Run risk-approval-agent for high-risk writer runs before lifecycle gates.")
+    automation_run_parser.add_argument("--auto-repair", action="store_true", help="Render ci-repair-agent schedule plans when lifecycle gates block.")
+    automation_run_parser.add_argument("--merge", action="store_true", help="Render and execute merge command after lifecycle merge gate passes.")
+    automation_run_parser.add_argument("--merge-method", choices=["merge", "squash", "rebase"], default="squash", help="GitHub merge method for --merge.")
+    automation_run_parser.add_argument("--delete-branch", action="store_true", help="Delete the PR branch when --merge succeeds.")
     automation_run_parser.add_argument("--skill-run-id", help="Suggested skill evolution schedule run id for lifecycle.")
     automation_run_parser.add_argument("--integration-run-id", help="Create and execute an integration-agent run after child publication.")
 
@@ -337,6 +354,17 @@ def main(argv: list[str] | None = None) -> int:
                 create_worktree=not args.no_worktree,
             )
             print(f"Prepared dispatch plan at {schedule_dir}")
+            return 0
+        if args.command == "scheduler-run":
+            summary = run_scheduler(
+                target=target,
+                issue=args.issue,
+                task_path=Path(args.task).expanduser().resolve(),
+                run_id=args.run_id,
+                timeout_seconds=args.timeout,
+                retries=args.retries,
+            )
+            print(f"Scheduler run {summary['status']} for {args.run_id}")
             return 0
         if args.command == "pr-body":
             body_path = render_pr_body(target=target, run_id=args.run)
@@ -526,9 +554,11 @@ def main(argv: list[str] | None = None) -> int:
             summary = run_automation(
                 target=target,
                 issue=args.issue,
-                plan_path=Path(args.plan).expanduser().resolve(),
+                plan_path=Path(args.plan).expanduser().resolve() if args.plan else None,
                 run_id=args.run_id,
                 timeout_seconds=args.timeout,
+                scheduler_task_path=Path(args.scheduler_task).expanduser().resolve() if args.scheduler_task else None,
+                scheduler_run_id=args.scheduler_run_id,
                 retries=args.retries,
                 validation_mode=args.validation_mode,
                 create_worktree=not args.no_worktree,
@@ -544,6 +574,12 @@ def main(argv: list[str] | None = None) -> int:
                 checks_watch=args.checks_watch,
                 checks_interval=args.checks_interval,
                 lifecycle=args.lifecycle,
+                auto_review=args.auto_review,
+                auto_risk_approval=args.auto_risk_approval,
+                auto_repair=args.auto_repair,
+                merge=args.merge,
+                merge_method=args.merge_method,
+                delete_branch=args.delete_branch,
                 skill_run_id=args.skill_run_id,
                 integration_run_id=args.integration_run_id,
             )
