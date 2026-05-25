@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .connector_contracts import ConnectorContractError, validate_connector_contracts
+from .local_daemon_policy import LocalDaemonPolicyError, validate_trigger_policy
 from .yaml_lite import load_yaml, loads_yaml
 
 
@@ -72,6 +73,11 @@ def validate_scaffold(target: Path) -> None:
     try:
         validate_connector_contracts(connectors)
     except ConnectorContractError as exc:
+        errors.append(str(exc))
+
+    try:
+        validate_trigger_policy(target)
+    except LocalDaemonPolicyError as exc:
         errors.append(str(exc))
 
     for schema_path in sorted((target / ".ai" / "schemas").glob("*.schema.json")):
