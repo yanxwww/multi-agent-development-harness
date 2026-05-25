@@ -98,6 +98,25 @@ class HarnessCliTests(unittest.TestCase):
 
             self.assertEqual(main(["validate", "--target", str(root)]), 1)
 
+    def test_validate_rejects_invalid_local_daemon_trigger_policy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            (root / ".ai" / "rules" / "local-daemon.yml").write_text(
+                "\n".join(
+                    [
+                        "version: 1",
+                        "label_actions:",
+                        "  ai:auto: deploy",
+                        "comment_actions:",
+                        "  /ai run: run",
+                        "",
+                    ]
+                )
+            )
+
+            self.assertEqual(main(["validate", "--target", str(root)]), 1)
+
     def test_connector_contracts_command_writes_report(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

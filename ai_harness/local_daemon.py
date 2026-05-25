@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .automation import run_automation
+from .local_daemon_policy import load_trigger_policy
 from .runs import validate_run_id
 from .validation import validate_scaffold
 
@@ -18,17 +19,6 @@ class LocalDaemonError(Exception):
     pass
 
 
-DEFAULT_LABEL_ACTIONS = {
-    "ai:auto": "run",
-    "ai:plan": "plan",
-    "ai:repair": "repair",
-    "ai:review": "review",
-}
-DEFAULT_COMMENT_ACTIONS = {
-    "/ai run": "run",
-    "/ai repair": "repair",
-    "/ai status": "status",
-}
 GITHUB_JSON_FIELDS = "number,title,body,labels,comments,updatedAt,url"
 
 
@@ -55,7 +45,7 @@ def run_github_sync_poll(
         state = _load_state(root)
         processed = set(state.get("processed_event_ids", []))
         items = _load_github_items(target=target, executable=executable)
-        trigger_policy = _load_trigger_policy(target)
+        trigger_policy = load_trigger_policy(target)
         candidates = _trigger_events(items, trigger_policy)
 
         created_events: list[dict[str, Any]] = []
@@ -324,47 +314,6 @@ def _trigger_events(items: list[dict[str, Any]], policy: dict[str, dict[str, str
     return events
 
 
-def _load_trigger_policy(target: Path) -> dict[str, dict[str, str]]:
-    path = target / ".ai" / "rules" / "local-daemon.yml"
-    if not path.exists():
-        return {
-            "label_actions": dict(DEFAULT_LABEL_ACTIONS),
-            "comment_actions": dict(DEFAULT_COMMENT_ACTIONS),
-        }
-    text = path.read_text()
-    policy = {
-        "label_actions": _parse_action_section(text, "label_actions"),
-        "comment_actions": _parse_action_section(text, "comment_actions"),
-    }
-    return policy
-
-
-def _parse_action_section(text: str, section: str) -> dict[str, str]:
-    actions: dict[str, str] = {}
-    in_section = False
-    section_indent = 0
-    for raw in text.splitlines():
-        if not raw.strip() or raw.lstrip().startswith("#"):
-            continue
-        indent = len(raw) - len(raw.lstrip(" "))
-        content = raw.strip()
-        if indent == 0:
-            key, sep, rest = content.partition(":")
-            in_section = sep == ":" and key == section and not rest.strip()
-            section_indent = indent
-            continue
-        if not in_section:
-            continue
-        if indent <= section_indent:
-            in_section = False
-            continue
-        trigger, sep, action = content.rpartition(":")
-        if not sep or not trigger.strip() or not action.strip():
-            raise LocalDaemonError(f"{section} entries must use '<trigger>: <action>'")
-        actions[_strip_quotes(trigger.strip())] = _strip_quotes(action.strip())
-    return actions
-
-
 def _event(source: dict[str, Any], trigger: str, action: str) -> dict[str, Any]:
     event_id = f"{source['kind']}-{source['number']}-{_trigger_id(trigger)}"
     return {
@@ -379,12 +328,6 @@ def _event(source: dict[str, Any], trigger: str, action: str) -> dict[str, Any]:
 def _comment_command(body: str, comment_actions: dict[str, str]) -> str:
     first_line = body.strip().splitlines()[0].strip() if body.strip() else ""
     return first_line if first_line in comment_actions else ""
-
-
-def _strip_quotes(value: str) -> str:
-    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
-        return value[1:-1]
-    return value
 
 
 def _scheduler_task(event: dict[str, Any]) -> dict[str, Any]:
