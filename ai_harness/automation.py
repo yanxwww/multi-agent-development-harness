@@ -152,10 +152,15 @@ def _run_child_publication_phases(
     phase: dict[str, Any] = {
         "run_id": run_id,
         "agent_id": child.get("agent_id"),
+        "mode": child.get("mode"),
+        "requires_pr": child.get("requires_pr", False),
         "dispatch_status": child.get("status"),
         "status": "succeeded" if child.get("status") == "succeeded" else "failed",
     }
     if phase["status"] == "failed":
+        return phase
+    if child.get("mode") != "writer" or not child.get("requires_pr", False):
+        phase["publication_status"] = "skipped"
         return phase
 
     if run_pr_commands:

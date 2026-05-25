@@ -120,15 +120,21 @@ def run_github_checks_command(
     (run_dir / "github_checks_stdout.log").write_text(result["stdout"])
     (run_dir / "github_checks_stderr.log").write_text(result["stderr"])
     error = ""
-    try:
-        checks = _parse_checks_stdout(result["stdout"])
-        ci_results = _ci_results_from_checks(run_id, checks)
-        eval_results = _load_eval_results(eval_results_path) if eval_results_path else _default_eval_results(run_id)
-    except GitHubError as exc:
-        checks = []
-        error = str(exc)
+    checks: list[dict[str, Any]] = []
+    if result["timed_out"]:
+        error = "GitHub checks command timed out"
+    elif result["exit_code"] not in {0, 8}:
+        error = f"GitHub checks command exited with {result['exit_code']}"
+    if not error:
+        try:
+            checks = _parse_checks_stdout(result["stdout"])
+        except GitHubError as exc:
+            error = str(exc)
+    if error:
         ci_results = _failed_ci_results(run_id, error)
-        eval_results = _default_eval_results(run_id)
+    else:
+        ci_results = _ci_results_from_checks(run_id, checks)
+    eval_results = _load_eval_results(eval_results_path) if eval_results_path else _default_eval_results(run_id)
     (run_dir / "ci_results.json").write_text(json.dumps(ci_results, indent=2) + "\n")
     (run_dir / "eval_results.json").write_text(json.dumps(eval_results, indent=2) + "\n")
 

@@ -40,13 +40,14 @@ def sync_run_skills(target: Path, run_id: str) -> dict[str, Any]:
     connector = _string_or_default(run, "connector", _string(binding, "connector"))
     connector_profile = _string_or_default(run, "connector_profile", _string(binding, "profile"))
     destination = _destination_for_connector(connector)
+    destination_root = _destination_root(target, run)
     registry = _load_registry(target)
     skills = _allowed_skills(agent)
 
     synced: list[dict[str, Any]] = []
     for skill_id in skills:
         _validate_skill_id(skill_id)
-        synced.append(_sync_skill(target, skill_id, registry, destination))
+        synced.append(_sync_skill(target, destination_root, skill_id, registry, destination))
 
     manifest = {
         "run_id": run_id,
@@ -54,6 +55,7 @@ def sync_run_skills(target: Path, run_id: str) -> dict[str, Any]:
         "connector": connector,
         "connector_profile": connector_profile,
         "destination": destination,
+        "destination_root": _relative_to_target(target, destination_root),
         "skills": synced,
         "created_at": _now(),
     }
@@ -63,9 +65,9 @@ def sync_run_skills(target: Path, run_id: str) -> dict[str, Any]:
     return manifest
 
 
-def _sync_skill(target: Path, skill_id: str, registry: dict[str, Any], destination: str) -> dict[str, Any]:
+def _sync_skill(target: Path, destination_root: Path, skill_id: str, registry: dict[str, Any], destination: str) -> dict[str, Any]:
     source_dir = target / ".ai" / "skills" / skill_id
-    target_dir = target / destination / skill_id
+    target_dir = destination_root / destination / skill_id
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     description = _registry_description(registry, skill_id)
 
@@ -85,9 +87,18 @@ def _sync_skill(target: Path, skill_id: str, registry: dict[str, Any], destinati
         "id": skill_id,
         "status": status,
         "source": source,
-        "target": f"{destination}/{skill_id}",
+        "target": _relative_to_target(target, target_dir),
         "description": description,
     }
+
+
+def _destination_root(target: Path, run: dict[str, Any]) -> Path:
+    worktree = run.get("worktree")
+    if isinstance(worktree, str) and worktree:
+        worktree_path = target / worktree
+        if worktree_path.exists() and worktree_path.is_dir():
+            return worktree_path
+    return target
 
 
 def _destination_for_connector(connector: str) -> str:
@@ -153,6 +164,13 @@ def _string_or_default(value: dict[str, Any], key: str, default: str) -> str:
     if not isinstance(item, str) or not item:
         return default
     return item
+
+
+def _relative_to_target(target: Path, path: Path) -> str:
+    try:
+        return str(path.relative_to(target)) or "."
+    except ValueError:
+        return str(path)
 
 
 def _append_trace(run_dir: Path, event: dict[str, Any]) -> None:

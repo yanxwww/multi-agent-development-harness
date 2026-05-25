@@ -145,6 +145,8 @@ def _execute_child(
         "run_id": child_run_id,
         "agent_id": entry["agent_id"],
         "task_id": entry["task_id"],
+        "mode": entry.get("mode"),
+        "requires_pr": entry.get("requires_pr", False),
         "depends_on": entry.get("depends_on", []),
     }
     try:

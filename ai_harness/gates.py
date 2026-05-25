@@ -84,6 +84,12 @@ def run_pr_gate(target: Path, run_id: str) -> dict[str, Any]:
 
     reasons: list[str] = []
     execution = _load_optional_json(run_dir / "connector_execution.json")
+    execution_label = "connector execution"
+    execution_source = "connector_execution.json"
+    if run.get("agent_id") == "integration-agent" and not execution:
+        execution = _load_optional_json(run_dir / "integration_execution.json")
+        execution_label = "integration execution"
+        execution_source = "integration_execution.json"
     validation = _load_optional_json(run_dir / "validation_gate.json")
     evidence_exists = (run_dir / "evidence.json").exists()
     pr_body_exists = (run_dir / "pr-body.md").exists()
@@ -93,7 +99,7 @@ def run_pr_gate(target: Path, run_id: str) -> dict[str, Any]:
     if not pr_body_exists:
         reasons.append("PR body is missing")
     if execution.get("status") != "succeeded":
-        reasons.append(f"connector execution is {execution.get('status', 'missing')}")
+        reasons.append(f"{execution_label} is {execution.get('status', 'missing')}")
     if validation.get("status") not in {"passed", "skipped"}:
         reasons.append(f"validation gate is {validation.get('status', 'missing')}")
 
@@ -102,6 +108,7 @@ def run_pr_gate(target: Path, run_id: str) -> dict[str, Any]:
         "status": "passed" if not reasons else "blocked",
         "reasons": reasons,
         "connector_status": execution.get("status", "missing"),
+        "execution_source": execution_source if execution else None,
         "validation_status": validation.get("status", "missing"),
         "pr_body": "pr-body.md" if pr_body_exists else None,
         "created_at": _now(),

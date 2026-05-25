@@ -221,6 +221,40 @@ class HarnessCliTests(unittest.TestCase):
             self.assertFalse((root / ".agents" / "skills" / "frontend-implementation").exists())
             self.assertFalse((root / ".claude" / "skills" / "backend-implementation").exists())
 
+    def test_skill_sync_installs_writer_skills_inside_run_worktree(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            self._init_git_repo(root)
+            task.write_text(json.dumps({"summary": "Add API"}))
+            self.assertEqual(
+                main(
+                    [
+                        "create-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--agent",
+                        "backend-implementer",
+                        "--task",
+                        str(task),
+                        "--run-id",
+                        "run-skill-sync-worktree-001",
+                    ]
+                ),
+                0,
+            )
+
+            self.assertEqual(main(["skill-sync", "--target", str(root), "--run", "run-skill-sync-worktree-001"]), 0)
+
+            worktree = root / ".worktrees" / "run-skill-sync-worktree-001-backend-implementer"
+            manifest = json.loads((root / ".ai" / "runs" / "run-skill-sync-worktree-001" / "skill_sync.json").read_text())
+            self.assertEqual(manifest["destination_root"], ".worktrees/run-skill-sync-worktree-001-backend-implementer")
+            self.assertTrue((worktree / ".agents" / "skills" / "backend-implementation" / "SKILL.md").exists())
+            self.assertFalse((root / ".agents" / "skills" / "backend-implementation").exists())
+
     def test_skill_sync_routes_claude_bound_agent_to_claude_skill_dir(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -802,6 +836,40 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(eval_results["status"], "passed")
             self.assertEqual(eval_results["checks"][0]["status"], "skipped")
 
+    def test_run_github_checks_command_marks_empty_failed_cli_output_as_failed_ci(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-github-checks-empty-failed-001")
+            fake_gh = root / "fake-gh"
+            fake_gh.write_text("#!/bin/sh\nexit 1\n")
+            fake_gh.chmod(0o755)
+            (run_dir / "pr_execution.json").write_text(json.dumps({"status": "succeeded", "number": 11}))
+            self.assertEqual(
+                main(
+                    [
+                        "github-checks-command",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-github-checks-empty-failed-001",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+
+            self.assertEqual(
+                main(["run-github-checks-command", "--target", str(root), "--run", "run-github-checks-empty-failed-001", "--timeout", "5"]),
+                1,
+            )
+
+            execution = json.loads((run_dir / "github_checks_execution.json").read_text())
+            ci = json.loads((run_dir / "ci_results.json").read_text())
+            self.assertEqual(execution["status"], "failed")
+            self.assertEqual(ci["status"], "failed")
+            self.assertEqual(ci["checks"][0]["status"], "failed")
+
     def test_run_github_checks_command_rejects_mutated_argv(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1319,6 +1387,8 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue(commit_execution["commit_sha"])
             self.assertTrue((worktree / "backend.txt").exists())
             self.assertTrue((worktree / "frontend.txt").exists())
+            self.assertEqual(main(["validation-gate", "--target", str(root), "--run", "run-integration-001", "--mode", "skip"]), 0)
+            self.assertEqual(main(["pr-gate", "--target", str(root), "--run", "run-integration-001"]), 0)
             self.assertEqual(main(["push-command", "--target", str(root), "--run", "run-integration-001"]), 0)
 
     def test_run_integration_command_rejects_mutated_steps(self):
@@ -1653,6 +1723,66 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue((child_dir / "connector_execution.json").exists())
             self.assertTrue((child_dir / "pr_gate.json").exists())
 
+    def test_automation_run_skips_publication_phases_for_read_only_children(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            self._install_test_connector(root)
+            self._bind_agent_to_test_connector(root, "pr-reviewer")
+            plan = root / "automation_readonly_schedule_plan.json"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "pr-reviewer",
+                                "task_id": "T-review",
+                                "mode": "read_only",
+                                "depends_on": [],
+                                "expected_output": "review_findings",
+                                "requires_pr": False,
+                                "risk_level": "low",
+                                "success_criteria": ["Review completes"],
+                            }
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "automation-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-automation-readonly-001",
+                        "--no-worktree",
+                        "--validation-mode",
+                        "skip",
+                        "--github-checks",
+                        "--lifecycle",
+                    ]
+                ),
+                0,
+            )
+
+            schedule_dir = root / ".ai" / "runs" / "run-automation-readonly-001"
+            child_dir = root / ".ai" / "runs" / "run-automation-readonly-001-T-review-pr-reviewer"
+            summary = json.loads((schedule_dir / "automation_run.json").read_text())
+            child = summary["children"][0]
+            self.assertEqual(summary["status"], "succeeded")
+            self.assertEqual(child["status"], "succeeded")
+            self.assertEqual(child["publication_status"], "skipped")
+            self.assertFalse((child_dir / "github_checks_command.json").exists())
+            self.assertFalse((child_dir / "lifecycle_run.json").exists())
+
     def test_dispatch_plan_rejects_unknown_dependency_and_cycles(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1966,6 +2096,16 @@ class HarnessCliTests(unittest.TestCase):
             "  backend-implementer:\n    connector: test-cli\n    profile: test-profile\n",
         )
         assignments.write_text(text)
+
+    def _bind_agent_to_test_connector(self, root: Path, agent_id: str) -> None:
+        assignments = root / ".ai" / "private" / "assignments.yml"
+        lines = assignments.read_text().splitlines()
+        for index, line in enumerate(lines):
+            if line == f"  {agent_id}:":
+                lines[index + 1] = "    connector: test-cli"
+                lines[index + 2] = "    profile: test-profile"
+                break
+        assignments.write_text("\n".join(lines) + "\n")
 
     def _install_writing_test_connector(self, root: Path) -> None:
         connector = root / ".ai" / "connectors" / "test-cli.yml"
