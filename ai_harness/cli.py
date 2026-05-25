@@ -351,6 +351,8 @@ def build_parser() -> argparse.ArgumentParser:
     github_sync_poll_parser.add_argument("--run-id", required=True, help="Poll run id.")
     github_sync_poll_parser.add_argument("--executable", default="gh", help="GitHub CLI executable.")
     github_sync_poll_parser.add_argument("--execute", action="store_true", help="Execute local automation for new events.")
+    github_sync_poll_parser.add_argument("--status-sync", action="store_true", help="Post redacted GitHub status comments for new events.")
+    github_sync_poll_parser.add_argument("--status-timeout", type=float, default=30.0, help="Timeout seconds for GitHub status comments.")
     github_sync_poll_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per deterministic command.")
     github_sync_poll_parser.add_argument("--retries", type=int, default=0, help="Retry count after failed connector attempts.")
     github_sync_poll_parser.add_argument("--validation-mode", choices=["run", "skip"], default="run", help="Validation mode.")
@@ -367,6 +369,8 @@ def build_parser() -> argparse.ArgumentParser:
     local_daemon_parser.add_argument("--once", action="store_true", help="Run one poll cycle and exit.")
     local_daemon_parser.add_argument("--interval", type=float, default=60.0, help="Polling interval seconds.")
     local_daemon_parser.add_argument("--execute", action="store_true", help="Execute local automation for new events.")
+    local_daemon_parser.add_argument("--status-sync", action="store_true", help="Post redacted GitHub status comments for new events.")
+    local_daemon_parser.add_argument("--status-timeout", type=float, default=30.0, help="Timeout seconds for GitHub status comments.")
     local_daemon_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per deterministic command.")
     local_daemon_parser.add_argument("--retries", type=int, default=0, help="Retry count after failed connector attempts.")
     local_daemon_parser.add_argument("--validation-mode", choices=["run", "skip"], default="run", help="Validation mode.")
@@ -686,6 +690,8 @@ def main(argv: list[str] | None = None) -> int:
                 run_id=args.run_id,
                 executable=args.executable,
                 execute=args.execute,
+                status_sync=args.status_sync,
+                status_timeout_seconds=args.status_timeout,
                 timeout_seconds=args.timeout,
                 retries=args.retries,
                 validation_mode=args.validation_mode,
@@ -702,6 +708,8 @@ def main(argv: list[str] | None = None) -> int:
                 once=args.once,
                 interval_seconds=args.interval,
                 execute=args.execute,
+                status_sync=args.status_sync,
+                status_timeout_seconds=args.status_timeout,
                 timeout_seconds=args.timeout,
                 retries=args.retries,
                 validation_mode=args.validation_mode,

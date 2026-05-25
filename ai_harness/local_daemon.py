@@ -37,6 +37,8 @@ def run_github_sync_poll(
     run_id: str,
     executable: str = "gh",
     execute: bool = False,
+    status_sync: bool = False,
+    status_timeout_seconds: float = 30.0,
     timeout_seconds: float = 900.0,
     retries: int = 0,
     validation_mode: str = "run",
@@ -113,6 +115,17 @@ def run_github_sync_poll(
                         "automation_run": f".ai/runs/{automation_run_id}/automation_run.json",
                     }
                 )
+            status_result = _sync_event_status(
+                target=target,
+                event=event,
+                created=created,
+                enabled=status_sync,
+                executable=executable,
+                timeout_seconds=status_timeout_seconds,
+            )
+            if status_result is not None:
+                created["status_sync"] = status_result
+            _write_event_result(event_dir, created)
             created_events.append(created)
             processed.add(event_id)
 
@@ -146,6 +159,8 @@ def run_local_daemon(
     once: bool = False,
     interval_seconds: float = 60.0,
     execute: bool = False,
+    status_sync: bool = False,
+    status_timeout_seconds: float = 30.0,
     timeout_seconds: float = 900.0,
     retries: int = 0,
     validation_mode: str = "run",
@@ -160,6 +175,8 @@ def run_local_daemon(
             run_id=run_id,
             executable=executable,
             execute=execute,
+            status_sync=status_sync,
+            status_timeout_seconds=status_timeout_seconds,
             timeout_seconds=timeout_seconds,
             retries=retries,
             validation_mode=validation_mode,
@@ -180,6 +197,8 @@ def run_local_daemon(
             run_id=poll_run_id,
             executable=executable,
             execute=execute,
+            status_sync=status_sync,
+            status_timeout_seconds=status_timeout_seconds,
             timeout_seconds=timeout_seconds,
             retries=retries,
             validation_mode=validation_mode,
@@ -399,6 +418,69 @@ def _write_state(root: Path, state: dict[str, Any]) -> None:
 
 def _write_poll_summary(root: Path, run_id: str, summary: dict[str, Any]) -> None:
     (root / "polls" / f"{run_id}.json").write_text(json.dumps(summary, indent=2) + "\n")
+
+
+def _write_event_result(event_dir: Path, result: dict[str, Any]) -> None:
+    payload = {
+        "event_id": result["event_id"],
+        "source": result["source"],
+        "trigger": result["trigger"],
+        "action": result["action"],
+        "status": result["status"],
+        "executed": result["executed"],
+        "scheduler_task": result["scheduler_task"],
+        "updated_at": _now(),
+    }
+    for key in ["automation_run_id", "automation_run", "status_sync"]:
+        if key in result:
+            payload[key] = result[key]
+    (event_dir / "event_result.json").write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _sync_event_status(
+    target: Path,
+    event: dict[str, Any],
+    created: dict[str, Any],
+    enabled: bool,
+    executable: str,
+    timeout_seconds: float,
+) -> dict[str, Any] | None:
+    if not enabled:
+        return None
+    try:
+        return sync_github_status(
+            target=target,
+            event_id=event["event_id"],
+            status=created["status"],
+            message=_event_status_message(created),
+            executable=executable,
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception as exc:
+        return {
+            "event_id": event["event_id"],
+            "status": "failed",
+            "error": str(exc),
+            "created_at": _now(),
+        }
+
+
+def _event_status_message(result: dict[str, Any]) -> str:
+    if result.get("executed"):
+        return "\n".join(
+            [
+                f"Local automation completed with status `{result.get('status', 'unknown')}`.",
+                f"Automation run: `{result.get('automation_run_id', '')}`.",
+                "Runtime logs, traces, and connector outputs remain local.",
+            ]
+        )
+    return "\n".join(
+        [
+            "Local daemon created a scheduler task for this trigger.",
+            f"Scheduler task: `{result.get('scheduler_task', '')}`.",
+            "Runtime execution remains local.",
+        ]
+    )
 
 
 @contextmanager

@@ -16,6 +16,7 @@
     <string>--run-id</string>
     <string>run-local-daemon</string>
     <string>--execute</string>
+    <string>--status-sync</string>
   </array>
   <key>WorkingDirectory</key>
   <string>REPLACE_WITH_REPO_PATH</string>
