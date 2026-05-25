@@ -26,7 +26,7 @@ from .lifecycle import (
     transfer_writer_lock,
 )
 from .orchestrator import dispatch_run
-from .pull_requests import render_pr_command, run_pr_command
+from .pull_requests import render_merge_command, render_pr_command, run_merge_command, run_pr_command
 from .runs import create_run, render_pr_body
 from .scaffold import init_scaffold
 from .validation import validate_scaffold
@@ -120,6 +120,18 @@ def build_parser() -> argparse.ArgumentParser:
     run_pr_command_parser.add_argument("--target", default=".", help="Target repository root.")
     run_pr_command_parser.add_argument("--run", required=True, help="Run id.")
     run_pr_command_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds for the PR command.")
+
+    merge_command_parser = subparsers.add_parser("merge-command", help="Render a gh pr merge command for a merge-ready run.")
+    merge_command_parser.add_argument("--target", default=".", help="Target repository root.")
+    merge_command_parser.add_argument("--run", required=True, help="Run id.")
+    merge_command_parser.add_argument("--method", choices=["merge", "squash", "rebase"], default="squash", help="GitHub PR merge method.")
+    merge_command_parser.add_argument("--delete-branch", action="store_true", help="Delete the head branch after merge.")
+    merge_command_parser.add_argument("--executable", default="gh", help="GitHub CLI executable.")
+
+    run_merge_command_parser = subparsers.add_parser("run-merge-command", help="Execute a rendered merge command.")
+    run_merge_command_parser.add_argument("--target", default=".", help="Target repository root.")
+    run_merge_command_parser.add_argument("--run", required=True, help="Run id.")
+    run_merge_command_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds for the merge command.")
 
     diff_gate_parser = subparsers.add_parser("diff-gate", help="Evaluate writer worktree diff before commit.")
     diff_gate_parser.add_argument("--target", default=".", help="Target repository root.")
@@ -307,6 +319,20 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "run-pr-command":
             execution = run_pr_command(target=target, run_id=args.run, timeout_seconds=args.timeout)
             print(f"PR command {execution['status']} for {args.run}")
+            return 0 if execution["status"] == "succeeded" else 1
+        if args.command == "merge-command":
+            command_path = render_merge_command(
+                target=target,
+                run_id=args.run,
+                method=args.method,
+                delete_branch=args.delete_branch,
+                executable=args.executable,
+            )
+            print(f"Wrote merge command to {command_path}")
+            return 0
+        if args.command == "run-merge-command":
+            execution = run_merge_command(target=target, run_id=args.run, timeout_seconds=args.timeout)
+            print(f"Merge command {execution['status']} for {args.run}")
             return 0 if execution["status"] == "succeeded" else 1
         if args.command == "diff-gate":
             gate = run_diff_gate(target=target, run_id=args.run)

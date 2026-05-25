@@ -578,6 +578,82 @@ class HarnessCliTests(unittest.TestCase):
             self.assertIn("pr_command_started", trace)
             self.assertIn("pr_command_finished", trace)
 
+    def test_merge_command_requires_passed_merge_gate_and_executes_rendered_command(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-merge-command-001")
+            fake_gh = root / "fake-gh"
+            fake_gh.write_text("#!/bin/sh\necho merged \"$@\"\n")
+            fake_gh.chmod(0o755)
+
+            self.assertEqual(main(["merge-command", "--target", str(root), "--run", "run-merge-command-001"]), 1)
+
+            (run_dir / "merge_gate.json").write_text(json.dumps({"status": "passed", "merge_ready": True}))
+            self.assertEqual(main(["merge-command", "--target", str(root), "--run", "run-merge-command-001"]), 1)
+
+            (run_dir / "pr_execution.json").write_text(json.dumps({"status": "succeeded", "url": "https://example.test/pull/1"}))
+            self.assertEqual(
+                main(
+                    [
+                        "merge-command",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-merge-command-001",
+                        "--method",
+                        "squash",
+                        "--delete-branch",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+            command = json.loads((run_dir / "merge_command.json").read_text())
+            self.assertEqual(command["argv"][:3], [str(fake_gh), "pr", "merge"])
+            self.assertIn("ai/issue-123/backend-implementer/run-merge-command-001", command["argv"])
+            self.assertIn("--squash", command["argv"])
+            self.assertIn("--delete-branch", command["argv"])
+
+            self.assertEqual(main(["run-merge-command", "--target", str(root), "--run", "run-merge-command-001", "--timeout", "5"]), 0)
+            execution = json.loads((run_dir / "merge_execution.json").read_text())
+            self.assertEqual(execution["status"], "succeeded")
+            self.assertEqual(execution["exit_code"], 0)
+            self.assertIn("merged pr merge", (run_dir / "merge_stdout.log").read_text())
+            trace = (run_dir / "trace.jsonl").read_text()
+            self.assertIn("merge_command_started", trace)
+            self.assertIn("merge_command_finished", trace)
+
+    def test_run_merge_command_rejects_mutated_argv(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-merge-command-policy-001")
+            fake_gh = root / "fake-gh"
+            fake_gh.write_text("#!/bin/sh\necho merged \"$@\"\n")
+            fake_gh.chmod(0o755)
+            (run_dir / "merge_gate.json").write_text(json.dumps({"status": "passed", "merge_ready": True}))
+            (run_dir / "pr_execution.json").write_text(json.dumps({"status": "succeeded", "url": "https://example.test/pull/2"}))
+            self.assertEqual(
+                main(
+                    [
+                        "merge-command",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-merge-command-policy-001",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+            command = json.loads((run_dir / "merge_command.json").read_text())
+            command["argv"] = [sys.executable, "-c", "print('mutated merge')"]
+            (run_dir / "merge_command.json").write_text(json.dumps(command))
+
+            self.assertEqual(main(["run-merge-command", "--target", str(root), "--run", "run-merge-command-policy-001", "--timeout", "5"]), 1)
+            self.assertFalse((run_dir / "merge_execution.json").exists())
+
     def test_ci_eval_gate_blocks_missing_or_failed_results_and_passes_green_results(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

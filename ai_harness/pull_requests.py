@@ -122,6 +122,97 @@ def run_pr_command(target: Path, run_id: str, timeout_seconds: float) -> dict[st
     return execution
 
 
+def render_merge_command(
+    target: Path,
+    run_id: str,
+    method: str = "squash",
+    delete_branch: bool = False,
+    executable: str = "gh",
+) -> Path:
+    run_dir = target / ".ai" / "runs" / run_id
+    run = _load_writer_run(run_dir, run_id)
+    _require_merge_ready(run_dir, run_id)
+    _require_pr_created(run_dir, run_id)
+
+    command = _expected_merge_command(
+        run_id=run_id,
+        run=run,
+        method=method,
+        delete_branch=delete_branch,
+        executable=executable,
+    )
+    command["created_at"] = _now()
+    output_path = run_dir / "merge_command.json"
+    output_path.write_text(json.dumps(command, indent=2) + "\n")
+    _append_trace(run_dir, {"event": "merge_command_rendered", "run_id": run_id, "head": command["head"]})
+    return output_path
+
+
+def run_merge_command(target: Path, run_id: str, timeout_seconds: float) -> dict[str, Any]:
+    if timeout_seconds <= 0:
+        raise PullRequestError("timeout must be greater than 0")
+
+    run_dir = target / ".ai" / "runs" / run_id
+    command_path = run_dir / "merge_command.json"
+    if not command_path.exists():
+        raise PullRequestError(f"merge command is missing for {run_id}")
+
+    command = json.loads(command_path.read_text())
+    run = _load_writer_run(run_dir, run_id)
+    _require_merge_ready(run_dir, run_id)
+    _require_pr_created(run_dir, run_id)
+    expected = _expected_merge_command(
+        run_id=run_id,
+        run=run,
+        method=_string_field(command, "method", "squash"),
+        delete_branch=bool(command.get("delete_branch", False)),
+        executable=_string_field(command, "executable", "gh"),
+    )
+    _validate_command_fields(
+        command,
+        expected,
+        ["run_id", "agent_id", "executable", "head", "method", "delete_branch", "argv", "display"],
+        "merge command does not match rendered merge policy",
+    )
+    argv = command.get("argv")
+    if not isinstance(argv, list) or not argv or not all(isinstance(item, str) for item in argv):
+        raise PullRequestError("merge command argv must be a non-empty string list")
+
+    stdout_path = run_dir / "merge_stdout.log"
+    stderr_path = run_dir / "merge_stderr.log"
+    started_at = _now()
+    _append_trace(run_dir, {"event": "merge_command_started", "run_id": run_id})
+    attempt = _run_attempt(argv, target, timeout_seconds)
+    stdout_path.write_text(attempt["stdout"])
+    stderr_path.write_text(attempt["stderr"])
+    status = "succeeded" if attempt["exit_code"] == 0 and not attempt["timed_out"] else "failed"
+    execution = {
+        "run_id": run_id,
+        "status": status,
+        "argv": argv,
+        "timeout_seconds": timeout_seconds,
+        "exit_code": attempt["exit_code"],
+        "timed_out": attempt["timed_out"],
+        "duration_seconds": attempt["duration_seconds"],
+        "started_at": started_at,
+        "finished_at": _now(),
+        "stdout_log": "merge_stdout.log",
+        "stderr_log": "merge_stderr.log",
+    }
+    (run_dir / "merge_execution.json").write_text(json.dumps(execution, indent=2) + "\n")
+    _append_trace(
+        run_dir,
+        {
+            "event": "merge_command_finished",
+            "run_id": run_id,
+            "status": status,
+            "exit_code": attempt["exit_code"],
+            "timed_out": attempt["timed_out"],
+        },
+    )
+    return execution
+
+
 def _expected_pr_command(
     run_id: str,
     run: dict[str, Any],
@@ -163,6 +254,61 @@ def _expected_pr_command(
     }
 
 
+def _expected_merge_command(
+    run_id: str,
+    run: dict[str, Any],
+    method: str,
+    delete_branch: bool,
+    executable: str,
+) -> dict[str, Any]:
+    if method not in {"merge", "squash", "rebase"}:
+        raise PullRequestError("merge method must be one of: merge, squash, rebase")
+    head = run.get("branch")
+    if not isinstance(head, str) or not head:
+        raise PullRequestError(f"run branch is missing for {run_id}")
+    argv = [
+        executable,
+        "pr",
+        "merge",
+        head,
+        f"--{method}",
+    ]
+    if delete_branch:
+        argv.append("--delete-branch")
+    return {
+        "run_id": run_id,
+        "agent_id": run.get("agent_id"),
+        "executable": executable,
+        "head": head,
+        "method": method,
+        "delete_branch": delete_branch,
+        "argv": argv,
+        "display": shlex.join(argv),
+    }
+
+
+def _load_writer_run(run_dir: Path, run_id: str) -> dict[str, Any]:
+    run_path = run_dir / "run.json"
+    if not run_path.exists():
+        raise PullRequestError(f"run metadata is missing for {run_id}")
+    run = json.loads(run_path.read_text())
+    if run.get("mode") != "writer":
+        raise PullRequestError("merge command can only be used for writer runs")
+    return run
+
+
+def _require_merge_ready(run_dir: Path, run_id: str) -> None:
+    merge_gate = _load_optional_json(run_dir / "merge_gate.json")
+    if merge_gate.get("status") != "passed" or not merge_gate.get("merge_ready", False):
+        raise PullRequestError(f"merge gate is {merge_gate.get('status', 'missing')}")
+
+
+def _require_pr_created(run_dir: Path, run_id: str) -> None:
+    pr_execution = _load_optional_json(run_dir / "pr_execution.json")
+    if pr_execution.get("status") != "succeeded":
+        raise PullRequestError(f"PR execution is {pr_execution.get('status', 'missing')}")
+
+
 def _validate_command_fields(
     command: dict[str, Any],
     expected: dict[str, Any],
@@ -177,7 +323,7 @@ def _validate_command_fields(
 def _string_field(command: dict[str, Any], key: str, default: str) -> str:
     value = command.get(key, default)
     if not isinstance(value, str) or not value:
-        raise PullRequestError(f"PR command {key} must be a non-empty string")
+        raise PullRequestError(f"command {key} must be a non-empty string")
     return value
 
 

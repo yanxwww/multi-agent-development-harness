@@ -39,6 +39,7 @@ The CLI provides:
 - `harness writer-lock` and `harness writer-transfer` to enforce single branch writer ownership and audited repair handoff.
 - `harness risk-approval-gate` to validate autonomous high-risk approval from `risk-approval-agent`.
 - `harness merge-gate` to evaluate merge readiness without merging.
+- `harness merge-command` and `harness run-merge-command` to render and execute deterministic `gh pr merge` commands after merge readiness passes.
 - `harness skill-evolution-plan` to recommend a dedicated skill-curator writer PR from repeated feedback patterns.
 - `harness lifecycle-run` to chain post-publication lifecycle gates and skill evolution planning deterministically.
 
@@ -193,6 +194,8 @@ writer-lock -> ci-eval-gate -> review-gate -> risk-approval-gate -> merge-gate -
 
 It writes `lifecycle_run.json` and returns success only when `merge-gate` passes. Skill evolution planning still runs when merge is blocked, so repeated review or validation patterns can generate a dedicated `skill-curator` follow-up PR.
 
+After `merge-gate` passes and `pr_execution.json` confirms PR creation, `harness merge-command` can produce a deterministic `gh pr merge <branch>` command artifact. `harness run-merge-command` re-derives that artifact before execution, rejects mutations, captures stdout/stderr, and writes `merge_execution.json`. It uses normal GitHub CLI permissions and branch protection; it does not add an admin or bypass path.
+
 ## State Machine
 
 The MVP defines the state machine as policy data, not code orchestration:
@@ -309,6 +312,14 @@ Command execution hardening:
 - merge readiness is summarized in `lifecycle_run.json`
 - skill evolution planning runs even when merge is blocked
 
+`harness merge-command` checks merge execution readiness:
+
+- merge gate passed and is merge-ready
+- PR execution succeeded
+- head branch comes from run metadata
+- merge method is one of `merge`, `squash`, or `rebase`
+- command artifacts are re-derived and mutation-checked before execution
+
 ## Non-Goals
 
 The MVP does not:
@@ -316,6 +327,6 @@ The MVP does not:
 - run hosted CI directly
 - install skills into external agent environments
 - implement stacked PRs or integration PRs
-- execute merge operations
+- bypass GitHub branch protection or required checks
 
 These are adapter and orchestration layers that can be added after the repo contract is stable.
