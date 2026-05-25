@@ -54,6 +54,7 @@ class HarnessCliTests(unittest.TestCase):
             self.assertIn(".ai/events/*", gitignore)
             self.assertIn(".ai/local-daemon/events/*", gitignore)
             self.assertIn(".ai/local-daemon/state.json", gitignore)
+            self.assertIn(".ai/github_doctor.json", gitignore)
             self.assertFalse((root / "CLAUDE.md").exists())
 
     def test_scheduler_catalog_hides_runtime_bindings(self):
@@ -2674,6 +2675,71 @@ class HarnessCliTests(unittest.TestCase):
                 1,
             )
             self.assertFalse((root / ".ai" / "local-daemon" / "polls" / "run-local-poll-locked.json").exists())
+
+    def test_github_sync_poll_execute_requires_passing_github_doctor_before_events(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            calls_log = root / "gh-calls.jsonl"
+            fake_gh = root / "fake-gh"
+            issues = [
+                {
+                    "number": 42,
+                    "title": "Should not run",
+                    "body": "Run this locally.",
+                    "url": "https://github.com/example/repo/issues/42",
+                    "updatedAt": "2026-05-26T01:02:03Z",
+                    "labels": [{"name": "ai:auto"}],
+                    "comments": [],
+                }
+            ]
+            script = (
+                "import json,sys\n"
+                f"issues={issues!r}\n"
+                f"log={str(calls_log)!r}\n"
+                "args=sys.argv[1:]\n"
+                "open(log, 'a').write(json.dumps(args) + '\\n')\n"
+                "if args[:2] == ['auth', 'status']:\n"
+                "    print('not authenticated')\n"
+                "    sys.exit(1)\n"
+                "if args[:2] == ['repo', 'view']:\n"
+                "    print('{\"nameWithOwner\":\"example/repo\"}')\n"
+                "elif args[:2] == ['issue', 'list']:\n"
+                "    print(json.dumps(issues))\n"
+                "elif args[:2] == ['pr', 'list']:\n"
+                "    print('[]')\n"
+                "else:\n"
+                "    print('[]')\n"
+            )
+            fake_gh.write_text(f"#!{sys.executable}\n{script}")
+            fake_gh.chmod(0o755)
+
+            self.assertEqual(
+                main(
+                    [
+                        "github-sync-poll",
+                        "--target",
+                        str(root),
+                        "--run-id",
+                        "run-local-preflight-001",
+                        "--executable",
+                        str(fake_gh),
+                        "--execute",
+                    ]
+                ),
+                1,
+            )
+
+            poll = json.loads((root / ".ai" / "local-daemon" / "polls" / "run-local-preflight-001.json").read_text())
+            self.assertEqual(poll["status"], "failed")
+            self.assertEqual(poll["execute_preflight"]["status"], "failed")
+            self.assertEqual(poll["created_event_count"], 0)
+            self.assertFalse((root / ".ai" / "local-daemon" / "events" / "issue-42-ai-auto").exists())
+            doctor = json.loads((root / ".ai" / "github_doctor.json").read_text())
+            self.assertEqual(doctor["status"], "failed")
+            calls = [json.loads(line) for line in calls_log.read_text().splitlines()]
+            self.assertIn(["auth", "status"], calls)
+            self.assertNotIn(["issue", "list", "--state", "open", "--json", "number,title,body,labels,comments,updatedAt,url"], calls)
 
     def test_github_sync_poll_status_sync_posts_planned_comment_and_event_result(self):
         with tempfile.TemporaryDirectory() as temp:

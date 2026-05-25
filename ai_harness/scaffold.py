@@ -442,6 +442,7 @@ def _merge_gitignore(path: Path) -> None:
         "!.ai/local-daemon/polls/.gitkeep",
         ".ai/local-daemon/state.json",
         ".ai/local-daemon/*.log",
+        ".ai/github_doctor.json",
         ".ai/artifact_retention_report.json",
         ".ai/connector_contracts.json",
         ".ai/private/*.local.yml",
