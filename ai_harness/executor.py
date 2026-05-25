@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from datetime import datetime, timezone
@@ -44,6 +45,7 @@ def run_connector_command(
     cwd = target / workspace
     if not cwd.exists() or not cwd.is_dir():
         raise ExecutionError(f"connector workspace does not exist: {workspace}")
+    stdin_text, stdin_file, stdin_sha256 = _load_prompt_stdin(target, command)
 
     stdout_path = run_dir / "stdout.log"
     stderr_path = run_dir / "stderr.log"
@@ -68,7 +70,7 @@ def run_connector_command(
                 "attempt": attempt_number,
             },
         )
-        attempt = _run_attempt(argv, timeout_seconds, cwd)
+        attempt = _run_attempt(argv, timeout_seconds, cwd, stdin_text)
         attempt["attempt"] = attempt_number
         attempts.append(attempt)
         final_exit_code = attempt["exit_code"]
@@ -106,6 +108,8 @@ def run_connector_command(
         "connector": command.get("connector"),
         "profile": command.get("profile"),
         "argv": argv,
+        "stdin_file": stdin_file,
+        "stdin_sha256": stdin_sha256,
         "timeout_seconds": timeout_seconds,
         "retries": retries,
         "attempts": attempts,
@@ -131,11 +135,30 @@ def run_connector_command(
     return execution
 
 
-def _run_attempt(argv: list[str], timeout_seconds: float, cwd: Path) -> dict[str, Any]:
+def _load_prompt_stdin(target: Path, command: dict[str, Any]) -> tuple[str, str | None, str | None]:
+    prompt_file = command.get("prompt_file")
+    prompt_sha256 = command.get("prompt_sha256")
+    if prompt_file is None:
+        return "", None, None
+    if not isinstance(prompt_file, str) or not prompt_file:
+        raise ExecutionError("connector command prompt_file must be a non-empty string")
+    if not isinstance(prompt_sha256, str) or not prompt_sha256:
+        raise ExecutionError("connector command prompt_sha256 must be a non-empty string")
+    prompt_path = _resolve_target_relative_path(target, prompt_file)
+    if not prompt_path.exists() or not prompt_path.is_file():
+        raise ExecutionError(f"connector prompt file is missing: {prompt_file}")
+    actual_sha256 = _sha256(prompt_path)
+    if actual_sha256 != prompt_sha256:
+        raise ExecutionError("connector prompt file does not match connector command hash")
+    return prompt_path.read_text(), prompt_file, actual_sha256
+
+
+def _run_attempt(argv: list[str], timeout_seconds: float, cwd: Path, stdin_text: str) -> dict[str, Any]:
     start = datetime.now(timezone.utc)
     try:
         completed = subprocess.run(
             argv,
+            input=stdin_text,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -195,3 +218,20 @@ def _duration_seconds(start: datetime, end: datetime) -> float:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _resolve_target_relative_path(target: Path, value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        raise ExecutionError("connector prompt_file must be relative to target")
+    resolved_target = target.resolve()
+    resolved_path = (target / path).resolve()
+    if resolved_path != resolved_target and resolved_target not in resolved_path.parents:
+        raise ExecutionError("connector prompt_file must stay inside target")
+    return resolved_path
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(path.read_bytes())
+    return digest.hexdigest()

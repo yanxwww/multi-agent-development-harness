@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shlex
 from pathlib import Path
@@ -51,6 +52,10 @@ def build_connector_command(
     workspace = run.get("worktree") or "."
     workspace_path = target / workspace
     schema_path = target / output_schema
+    prompt_file = f".ai/runs/{run_id}/prompt.md"
+    prompt_path = target / prompt_file
+    if not prompt_path.exists():
+        raise ConnectorError(f"run prompt is missing for {run_id}")
     values = {
         "workspace": shlex.quote(str(workspace_path)),
         "output_schema": shlex.quote(str(schema_path)),
@@ -64,6 +69,8 @@ def build_connector_command(
         "executable": connector.get("executable"),
         "workspace": workspace,
         "output_schema": output_schema,
+        "prompt_file": prompt_file,
+        "prompt_sha256": _sha256(prompt_path),
         "display": display,
         "argv": shlex.split(display),
     }
@@ -83,6 +90,8 @@ def validate_connector_command_artifact(target: Path, run_id: str, command: dict
         "executable",
         "workspace",
         "output_schema",
+        "prompt_file",
+        "prompt_sha256",
         "display",
         "argv",
     ]
@@ -108,3 +117,9 @@ def _render_template(template: str, values: dict[str, str]) -> str:
     for key, value in values.items():
         rendered = rendered.replace("{" + key + "}", value)
     return rendered
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(path.read_bytes())
+    return digest.hexdigest()
