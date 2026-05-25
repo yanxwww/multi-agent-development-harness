@@ -18,6 +18,7 @@ python3 -m ai_harness init --target .
 python3 -m ai_harness validate --target .
 python3 -m ai_harness create-run --target . --issue 123 --agent backend-implementer --task task.json --no-worktree
 python3 -m ai_harness pr-body --target . --run run-20260523-001
+python3 -m ai_harness skill-sync --target . --run run-20260523-001
 python3 -m ai_harness dispatch-plan --target . --issue 123 --plan schedule_plan.json --run-id run-schedule-001 --no-worktree
 python3 -m ai_harness connector-command --target . --run run-20260523-001
 python3 -m ai_harness run-connector --target . --run run-20260523-001 --timeout 900 --retries 1
@@ -30,6 +31,9 @@ python3 -m ai_harness push-command --target . --run run-20260523-001 --remote or
 python3 -m ai_harness run-push-command --target . --run run-20260523-001 --timeout 900
 python3 -m ai_harness pr-command --target . --run run-20260523-001 --base main --draft
 python3 -m ai_harness run-pr-command --target . --run run-20260523-001 --timeout 900
+python3 -m ai_harness github-doctor --target .
+python3 -m ai_harness github-checks-command --target . --run run-20260523-001 --watch --interval 10
+python3 -m ai_harness run-github-checks-command --target . --run run-20260523-001 --timeout 900
 python3 -m ai_harness ci-eval-gate --target . --run run-20260523-001
 python3 -m ai_harness review-gate --target . --run run-20260523-001
 python3 -m ai_harness writer-lock --target . --run run-20260523-001
@@ -40,7 +44,11 @@ python3 -m ai_harness merge-command --target . --run run-20260523-001 --method s
 python3 -m ai_harness run-merge-command --target . --run run-20260523-001 --timeout 900
 python3 -m ai_harness skill-evolution-plan --target . --source-run run-20260523-001 --run-id run-skill-evolution-001
 python3 -m ai_harness lifecycle-run --target . --run run-20260523-001 --skill-run-id run-skill-evolution-001
+python3 -m ai_harness integration-plan --target . --issue 123 --schedule-run run-schedule-001 --run-id run-integration-001
+python3 -m ai_harness integration-command --target . --run run-integration-001
+python3 -m ai_harness run-integration-command --target . --run run-integration-001 --timeout 900
 python3 -m ai_harness dispatch-run --target . --issue 123 --plan schedule_plan.json --run-id run-dispatch-001 --timeout 900 --retries 1 --commit-and-push --push-remote origin --prepare-pr-command --pr-base main --draft-pr
+python3 -m ai_harness automation-run --target . --issue 123 --plan schedule_plan.json --run-id run-automation-001 --timeout 900 --commit-and-push --prepare-pr-command --run-pr-command --github-checks --lifecycle
 ```
 
 Installable entry point:
@@ -72,6 +80,8 @@ The deterministic dispatcher validates the plan, resolves `agent_id -> connector
 
 `run-connector` executes `connector_command.json` with a per-attempt timeout and retry count. For configured connector profiles, it re-derives the expected command from run metadata before execution and rejects mutated command artifacts. It writes `stdout.log`, `stderr.log`, per-attempt logs, `connector_events.jsonl` for JSON stdout lines, `connector_execution.json`, and trace events in `trace.jsonl`.
 
+`skill-sync` installs only the run agent's allowlisted skills into the bound runtime skill directory. Codex-bound runs write `.agents/skills/<skill>/SKILL.md`; Claude Code-bound runs write `.claude/skills/<skill>/SKILL.md`. It copies concrete `.ai/skills/<skill>/` definitions when present, otherwise generates a minimal runtime skill from `.ai/skills/registry.yml`, then writes `skill_sync.json`.
+
 `validation-gate` runs or explicitly skips the validation commands declared in run metadata, falling back to `evidence.json` for manual runs. This prevents a mutable evidence bundle from becoming execution authority. It writes `validation_gate.json`, updates validation status in the evidence bundle, and appends trace events.
 
 `pr-gate` renders `pr-body.md` for writer runs and blocks the run unless evidence, connector execution, validation status, and PR body requirements are satisfied.
@@ -86,9 +96,13 @@ The deterministic dispatcher validates the plan, resolves `agent_id -> connector
 
 `run-pr-command` re-derives the expected PR command before execution for writer runs, rejects mutated artifacts, executes `pr_command.json`, and records `pr_stdout.log`, `pr_stderr.log`, `pr_execution.json`, and trace events. It depends on the local GitHub CLI environment being authenticated and the target branch being publishable.
 
+`github-doctor` checks local GitHub readiness by running `gh auth status`, `gh repo view`, and `git remote -v`, then writes `.ai/github_doctor.json`.
+
+`github-checks-command` renders `gh pr checks` into `github_checks_command.json` after a PR exists. `run-github-checks-command` re-derives the expected command, executes it with timeout, captures stdout/stderr, normalizes GitHub check buckets into `ci_results.json`, and writes a default skipped `eval_results.json` unless one is supplied.
+
 `dispatch-plan` rejects unsafe run ids, duplicate tasks, unknown dependencies, and dependency cycles before creating child runs. If child worktree creation fails mid-plan, the dispatcher removes already-created child run directories, worktrees, and local branches it owns.
 
-`dispatch-run` is the deterministic orchestration path. It calls `dispatch-plan`, executes child runs only after dependencies have succeeded, renders each child run's `connector_command.json`, executes the connector with timeout/retry trace capture, runs the validation gate, then runs the PR body/gate check. Downstream child tasks are marked `blocked` if a prerequisite fails. With `--commit-and-push`, gated writer children run `diff-gate -> commit-command -> run-commit-command -> push-command -> run-push-command`. With `--prepare-pr-command`, pushed writer children also get a deterministic PR command artifact. The scheduler still targets only `agent_id`; connector selection remains private to the dispatcher.
+`dispatch-run` is the deterministic orchestration path. It calls `dispatch-plan`, executes child runs only after dependencies have succeeded, syncs each child run's allowlisted skills, renders each child run's `connector_command.json`, executes the connector with timeout/retry trace capture, runs the validation gate, then runs the PR body/gate check. Downstream child tasks are marked `blocked` if a prerequisite fails. With `--commit-and-push`, gated writer children run `diff-gate -> commit-command -> run-commit-command -> push-command -> run-push-command`. With `--prepare-pr-command`, pushed writer children also get a deterministic PR command artifact. The scheduler still targets only `agent_id`; connector selection remains private to the dispatcher.
 
 `ci-eval-gate` evaluates run-local `ci_results.json` and `eval_results.json` artifacts and writes `ci_eval_gate.json`. It does not run CI directly; external CI adapters can write the result artifacts.
 
@@ -104,10 +118,14 @@ The deterministic dispatcher validates the plan, resolves `agent_id -> connector
 
 `run-merge-command` re-derives the expected merge command before execution, rejects mutated artifacts, executes `merge_command.json`, and records `merge_stdout.log`, `merge_stderr.log`, `merge_execution.json`, and trace events. It relies on GitHub CLI permissions and branch protection rather than bypassing them.
 
+`integration-plan` creates an `integration-agent` writer run from child writer PRs in a schedule run. `integration-command` renders deterministic `git merge --no-ff --no-edit <child-branch>` steps. `run-integration-command` re-derives the expected steps, rejects mutated artifacts, merges in the integration worktree, records conflicts if any, and writes `integration_execution.json` plus a `commit_execution.json` compatible with the push/PR chain.
+
 `skill-evolution-plan` mines repeated review finding patterns from a source run and writes both `skill_evolution_plan.json` and a runtime-blind `skill_evolution_schedule_plan.json` that dispatches `skill-curator` for a dedicated Skill Update PR.
 
 `lifecycle-run` is the deterministic post-publication runner. It chains `writer-lock -> ci-eval-gate -> review-gate -> risk-approval-gate -> merge-gate -> skill-evolution-plan`, writes `lifecycle_run.json`, and returns success only when the run is merge-ready. Skill evolution planning still runs when merge is blocked so repeated failures can create a follow-up Skill Update PR.
 
+`automation-run` is the top-level deterministic one-shot runner. It wraps `dispatch-run`, can optionally execute prepared PR commands, poll GitHub checks, run lifecycle gates, and create an integration run. It writes `automation_run.json` as the audit summary.
+
 ## Current MVP Boundaries
 
-This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, renders deterministic connector/git/PR/merge commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation, PR body, diff, commit, push, CI/Eval result artifacts, review findings, branch ownership, autonomous high-risk approval, merge readiness, lifecycle-run orchestration, merge execution, and skill evolution planning. It does not yet run hosted CI itself, install skills into external runtimes, bypass branch protection, or manage stacked/integration PRs. Those belong in the next orchestration layer.
+This version creates and validates the repo contract, prepares dispatch runs from a runtime-blind plan, enforces safe run ids and task dependencies, installs allowlisted runtime skills, renders deterministic connector/git/PR/GitHub-checks/integration/merge commands, revalidates mutable command artifacts before execution, captures logs and trace, and gates writer runs through validation, PR body, diff, commit, push, GitHub CI result artifacts, eval result artifacts, review findings, branch ownership, autonomous high-risk approval, merge readiness, lifecycle-run orchestration, integration execution, merge execution, automation-run orchestration, and skill evolution planning. It still relies on configured local CLI credentials and repository branch protection for hosted GitHub operations; it does not bypass those controls.

@@ -80,6 +80,14 @@ agents:
       - evidence_bundle
     can_write_repo: true
     write_requires_pr: true
+  integration-agent:
+    type: writer
+    purpose: Merge child writer branches into a final issue integration branch and PR.
+    outputs:
+      - integration_pr
+      - evidence_bundle
+    can_write_repo: true
+    write_requires_pr: true
   skill-curator:
     type: writer
     purpose: Convert repeated failures into skill, eval, lint, schema, or doc updates.

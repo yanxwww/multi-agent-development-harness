@@ -279,6 +279,28 @@ Repair validation and CI failures through an isolated writer run.
 - `pnpm typecheck`
 - `pnpm test`
 """,
+    "integration-agent": """---
+id: integration-agent
+type: writer
+version: 1
+default_pr_policy: required
+allowed_skills:
+  - integration-merge
+  - pr-evidence-bundle
+---
+# Integration Agent
+
+## Mission
+
+Integrate approved child writer branches for one issue into a final integration branch and pull request.
+
+## Rules
+
+- only merge branches listed in the integration plan
+- record merge evidence and conflicts
+- do not make unrelated code changes
+- produce an integration PR through the deterministic PR chain
+""",
     "skill-curator": """---
 id: skill-curator
 type: writer
@@ -546,6 +568,14 @@ agents:
       - evidence_bundle
     can_write_repo: true
     write_requires_pr: true
+  integration-agent:
+    type: writer
+    purpose: Merge child writer branches into a final issue integration branch and PR.
+    outputs:
+      - integration_pr
+      - evidence_bundle
+    can_write_repo: true
+    write_requires_pr: true
   skill-curator:
     type: writer
     purpose: Convert repeated failures into skill, eval, lint, schema, or doc updates.
@@ -593,6 +623,9 @@ bindings:
     connector: claude-code-cli
     profile: reviewer-readonly
   ci-repair-agent:
+    connector: codex-cli
+    profile: writer-workspace
+  integration-agent:
     connector: codex-cli
     profile: writer-workspace
   skill-curator:
@@ -684,6 +717,8 @@ skills:
     description: Produce structured pull request findings.
   ci-failure-repair:
     description: Repair validation and CI failures.
+  integration-merge:
+    description: Merge child writer branches into an audited integration branch.
   pr-evidence-bundle:
     description: Produce PR evidence, validation, risk, and rollback notes.
   skill-evolution:

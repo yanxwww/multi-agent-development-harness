@@ -30,6 +30,9 @@ bindings:
   ci-repair-agent:
     connector: codex-cli
     profile: writer-workspace
+  integration-agent:
+    connector: codex-cli
+    profile: writer-workspace
   skill-curator:
     connector: claude-code-cli
     profile: skill-writer

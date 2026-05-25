@@ -20,6 +20,8 @@ skills:
     description: Produce structured pull request findings.
   ci-failure-repair:
     description: Repair validation and CI failures.
+  integration-merge:
+    description: Merge child writer branches into an audited integration branch.
   pr-evidence-bundle:
     description: Produce PR evidence, validation, risk, and rollback notes.
   skill-evolution:

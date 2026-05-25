@@ -23,6 +23,7 @@ The CLI provides:
 - `harness validate` to check scaffold consistency.
 - `harness create-run` to allocate a run id, branch name, worktree path, private connector binding, trace skeleton, and evidence bundle for one agent identity.
 - `harness dispatch-plan` to validate a runtime-blind SchedulePlan and prepare deterministic AgentRun records through private connector bindings.
+- `harness skill-sync` to install only the run agent's allowlisted skills into the bound runtime skill directory.
 - `harness connector-command` to render the Codex CLI or Claude Code CLI command for a prepared AgentRun without executing it.
 - `harness run-connector` to re-derive and execute a rendered connector command with stdout/stderr capture, JSON event extraction, timeout, retry, and exit trace.
 - `harness validation-gate` to run or explicitly skip policy validation commands and write validation gate artifacts.
@@ -34,14 +35,17 @@ The CLI provides:
 - `harness push-command` and `harness run-push-command` to render and execute deterministic branch push commands with trace.
 - `harness pr-command` to render a gated `gh pr create` command after PR readiness passes.
 - `harness run-pr-command` to execute a rendered PR command with stdout/stderr, timeout, exit code, and trace capture.
+- `harness github-doctor`, `harness github-checks-command`, and `harness run-github-checks-command` to audit GitHub readiness and normalize PR checks into CI/Eval artifacts.
 - `harness ci-eval-gate` to evaluate run-local CI and eval result artifacts.
 - `harness review-gate` to block unresolved blocking or major review findings.
 - `harness writer-lock` and `harness writer-transfer` to enforce single branch writer ownership and audited repair handoff.
 - `harness risk-approval-gate` to validate autonomous high-risk approval from `risk-approval-agent`.
 - `harness merge-gate` to evaluate merge readiness without merging.
 - `harness merge-command` and `harness run-merge-command` to render and execute deterministic `gh pr merge` commands after merge readiness passes.
+- `harness integration-plan`, `harness integration-command`, and `harness run-integration-command` to create an integration-agent branch and merge child writer PR branches through audited command artifacts.
 - `harness skill-evolution-plan` to recommend a dedicated skill-curator writer PR from repeated feedback patterns.
 - `harness lifecycle-run` to chain post-publication lifecycle gates and skill evolution planning deterministically.
+- `harness automation-run` to wrap dispatch, optional PR creation, GitHub checks, lifecycle gates, and integration execution in one deterministic audit summary.
 
 The MVP includes connector contract metadata for Codex CLI and Claude Code CLI. Connector, git publication, and PR execution are mediated through rendered command artifacts so the dispatcher remains deterministic, traceable, and testable.
 
@@ -126,7 +130,7 @@ The dispatcher sees `.ai/private/assignments.yml` and resolves `backend-implemen
 
 `dispatch-plan` validates the task dependency graph before creating child runs. Unknown dependencies, duplicate task ids, and cycles are rejected. Schedule and child run ids must match the safe run id grammar, so plan input cannot escape `.ai/runs`, `.worktrees`, or branch templates.
 
-`dispatch-run` keeps this boundary intact. It first prepares child AgentRun records from the scheduler-visible plan, then the dispatcher privately renders and executes each connector command, records connector execution, runs validation, and evaluates PR readiness. Child runs are released only after their declared dependencies have succeeded; dependents are marked `blocked` if a prerequisite fails. When `--commit-and-push` is enabled, it runs the deterministic publication chain for gated writer runs. When `--prepare-pr-command` is enabled, it also renders PR creation commands after the writer branch has passed the enabled publication gates.
+`dispatch-run` keeps this boundary intact. It first prepares child AgentRun records from the scheduler-visible plan, syncs allowlisted skills into the bound runtime skill directory, then the dispatcher privately renders and executes each connector command, records connector execution, runs validation, and evaluates PR readiness. Child runs are released only after their declared dependencies have succeeded; dependents are marked `blocked` if a prerequisite fails. When `--commit-and-push` is enabled, it runs the deterministic publication chain for gated writer runs. When `--prepare-pr-command` is enabled, it also renders PR creation commands after the writer branch has passed the enabled publication gates.
 
 ## Run Model
 
@@ -320,13 +324,14 @@ Command execution hardening:
 - merge method is one of `merge`, `squash`, or `rebase`
 - command artifacts are re-derived and mutation-checked before execution
 
+`harness integration-plan` and `harness run-integration-command` support the mature "child PRs plus integration PR" path without changing scheduler visibility. The integration agent remains a normal writer identity; the deterministic kernel still owns worktree creation, merge command artifacts, trace capture, and mutation checks.
+
 ## Non-Goals
 
 The MVP does not:
 
-- run hosted CI directly
-- install skills into external agent environments
-- implement stacked PRs or integration PRs
 - bypass GitHub branch protection or required checks
+- choose connector runtimes from scheduler output
+- expose credentials, model names, or private connector settings to scheduler agents
 
-These are adapter and orchestration layers that can be added after the repo contract is stable.
+Hosted GitHub operations are executed only through audited CLI command artifacts and require the local GitHub CLI environment to be configured.
