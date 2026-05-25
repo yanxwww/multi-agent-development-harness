@@ -17,6 +17,7 @@ from .git_publish import (
     run_push_command,
 )
 from .pull_requests import render_pr_command
+from .skill_sync import sync_run_skills
 
 
 class OrchestratorError(Exception):
@@ -144,9 +145,12 @@ def _execute_child(
         "run_id": child_run_id,
         "agent_id": entry["agent_id"],
         "task_id": entry["task_id"],
+        "mode": entry.get("mode"),
+        "requires_pr": entry.get("requires_pr", False),
         "depends_on": entry.get("depends_on", []),
     }
     try:
+        skill_sync = sync_run_skills(target, child_run_id)
         command_path = render_connector_command(target, child_run_id)
         execution = run_connector_command(target, child_run_id, timeout_seconds=timeout_seconds, retries=retries)
         validation = run_validation_gate(
@@ -184,6 +188,8 @@ def _execute_child(
         child.update(
             {
                 "connector_command": str(command_path.relative_to(target)),
+                "skill_sync": str((target / ".ai" / "runs" / child_run_id / "skill_sync.json").relative_to(target)),
+                "skill_count": len(skill_sync["skills"]),
                 "connector_status": execution["status"],
                 "validation_status": validation["status"],
                 "pr_gate_status": pr_gate["status"],

@@ -21,7 +21,12 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue((root / ".ai" / "agents" / "risk-approval-agent.md").exists())
             self.assertTrue((root / ".ai" / "schemas" / "schedule_plan.schema.json").exists())
             self.assertTrue((root / ".claude" / "settings.json").exists())
-            self.assertIn("CLAUDE.md", (root / ".gitignore").read_text())
+            gitignore = (root / ".gitignore").read_text()
+            self.assertIn("CLAUDE.md", gitignore)
+            self.assertIn(".agents/skills/*", gitignore)
+            self.assertIn("!.agents/skills/.gitkeep", gitignore)
+            self.assertIn(".claude/skills/*", gitignore)
+            self.assertIn("!.claude/skills/.gitkeep", gitignore)
             self.assertFalse((root / "CLAUDE.md").exists())
 
     def test_scheduler_catalog_hides_runtime_bindings(self):
@@ -173,6 +178,118 @@ class HarnessCliTests(unittest.TestCase):
             self.assertIn("Agent ID: backend-implementer", body)
             self.assertIn("Connector: codex-cli", body)
             self.assertIn("Closes #123", body)
+
+    def test_skill_sync_exposes_only_allowed_skills_for_bound_codex_runtime(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            task.write_text(json.dumps({"summary": "Add API"}))
+            source_skill = root / ".ai" / "skills" / "backend-implementation" / "SKILL.md"
+            source_skill.parent.mkdir(parents=True)
+            source_skill.write_text(
+                "---\nname: backend-implementation\ndescription: Custom backend implementation skill.\n---\n# Backend\n"
+            )
+            main(
+                [
+                    "create-run",
+                    "--target",
+                    str(root),
+                    "--issue",
+                    "123",
+                    "--agent",
+                    "backend-implementer",
+                    "--task",
+                    str(task),
+                    "--run-id",
+                    "run-skill-sync-001",
+                    "--no-worktree",
+                ]
+            )
+
+            self.assertEqual(main(["skill-sync", "--target", str(root), "--run", "run-skill-sync-001"]), 0)
+
+            run_dir = root / ".ai" / "runs" / "run-skill-sync-001"
+            manifest = json.loads((run_dir / "skill_sync.json").read_text())
+            self.assertEqual(manifest["connector"], "codex-cli")
+            self.assertEqual(manifest["destination"], ".agents/skills")
+            self.assertEqual(
+                [item["id"] for item in manifest["skills"]],
+                ["backend-implementation", "ci-failure-repair", "pr-evidence-bundle"],
+            )
+            self.assertEqual(
+                (root / ".agents" / "skills" / "backend-implementation" / "SKILL.md").read_text(),
+                source_skill.read_text(),
+            )
+            generated = (root / ".agents" / "skills" / "ci-failure-repair" / "SKILL.md").read_text()
+            self.assertIn("Repair validation and CI failures.", generated)
+            self.assertFalse((root / ".agents" / "skills" / "frontend-implementation").exists())
+            self.assertFalse((root / ".claude" / "skills" / "backend-implementation").exists())
+
+    def test_skill_sync_installs_writer_skills_inside_run_worktree(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            self._init_git_repo(root)
+            task.write_text(json.dumps({"summary": "Add API"}))
+            self.assertEqual(
+                main(
+                    [
+                        "create-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--agent",
+                        "backend-implementer",
+                        "--task",
+                        str(task),
+                        "--run-id",
+                        "run-skill-sync-worktree-001",
+                    ]
+                ),
+                0,
+            )
+
+            self.assertEqual(main(["skill-sync", "--target", str(root), "--run", "run-skill-sync-worktree-001"]), 0)
+
+            worktree = root / ".worktrees" / "run-skill-sync-worktree-001-backend-implementer"
+            manifest = json.loads((root / ".ai" / "runs" / "run-skill-sync-worktree-001" / "skill_sync.json").read_text())
+            self.assertEqual(manifest["destination_root"], ".worktrees/run-skill-sync-worktree-001-backend-implementer")
+            self.assertTrue((worktree / ".agents" / "skills" / "backend-implementation" / "SKILL.md").exists())
+            self.assertFalse((root / ".agents" / "skills" / "backend-implementation").exists())
+
+    def test_skill_sync_routes_claude_bound_agent_to_claude_skill_dir(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "task.json"
+            main(["init", "--target", str(root)])
+            task.write_text(json.dumps({"summary": "Add UI"}))
+            main(
+                [
+                    "create-run",
+                    "--target",
+                    str(root),
+                    "--issue",
+                    "123",
+                    "--agent",
+                    "frontend-implementer",
+                    "--task",
+                    str(task),
+                    "--run-id",
+                    "run-skill-sync-claude-001",
+                    "--no-worktree",
+                ]
+            )
+
+            self.assertEqual(main(["skill-sync", "--target", str(root), "--run", "run-skill-sync-claude-001"]), 0)
+
+            manifest = json.loads((root / ".ai" / "runs" / "run-skill-sync-claude-001" / "skill_sync.json").read_text())
+            self.assertEqual(manifest["connector"], "claude-code-cli")
+            self.assertEqual(manifest["destination"], ".claude/skills")
+            self.assertTrue((root / ".claude" / "skills" / "frontend-implementation" / "SKILL.md").exists())
+            self.assertFalse((root / ".agents" / "skills" / "frontend-implementation").exists())
 
     def test_connector_command_renders_codex_writer_command(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -653,6 +770,201 @@ class HarnessCliTests(unittest.TestCase):
 
             self.assertEqual(main(["run-merge-command", "--target", str(root), "--run", "run-merge-command-policy-001", "--timeout", "5"]), 1)
             self.assertFalse((run_dir / "merge_execution.json").exists())
+
+    def test_github_doctor_records_auth_repo_and_remote_status(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            self._init_git_repo(root)
+            remote = root / "remote.git"
+            self._init_bare_remote(root, remote)
+            fake_gh = root / "fake-gh"
+            fake_gh.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1 $2\" = \"auth status\" ]; then echo authenticated; exit 0; fi\n"
+                "if [ \"$1 $2\" = \"repo view\" ]; then echo '{\"nameWithOwner\":\"acme/repo\",\"url\":\"https://github.com/acme/repo\"}'; exit 0; fi\n"
+                "exit 1\n"
+            )
+            fake_gh.chmod(0o755)
+
+            self.assertEqual(main(["github-doctor", "--target", str(root), "--executable", str(fake_gh)]), 0)
+            doctor = json.loads((root / ".ai" / "github_doctor.json").read_text())
+            self.assertEqual(doctor["status"], "passed")
+            self.assertEqual(doctor["repo"]["nameWithOwner"], "acme/repo")
+            self.assertEqual(doctor["checks"]["auth"]["status"], "passed")
+            self.assertEqual(doctor["checks"]["remote"]["status"], "passed")
+
+    def test_github_checks_command_captures_checks_and_writes_ci_eval_results(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-github-checks-001")
+            fake_gh = root / "fake-gh"
+            fake_gh.write_text(
+                "#!/bin/sh\n"
+                "printf '[{\"name\":\"unit\",\"bucket\":\"pass\",\"state\":\"SUCCESS\",\"workflow\":\"ci\"},"
+                "{\"name\":\"lint\",\"bucket\":\"skipping\",\"state\":\"SKIPPED\",\"workflow\":\"ci\"}]'\n"
+            )
+            fake_gh.chmod(0o755)
+            (run_dir / "pr_execution.json").write_text(
+                json.dumps({"status": "succeeded", "url": "https://github.com/acme/repo/pull/7", "number": 7})
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "github-checks-command",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-github-checks-001",
+                        "--watch",
+                        "--interval",
+                        "1",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+            command = json.loads((run_dir / "github_checks_command.json").read_text())
+            self.assertEqual(command["argv"][:3], [str(fake_gh), "pr", "checks"])
+            self.assertIn("7", command["argv"])
+            self.assertIn("--watch", command["argv"])
+
+            self.assertEqual(main(["run-github-checks-command", "--target", str(root), "--run", "run-github-checks-001", "--timeout", "5"]), 0)
+            execution = json.loads((run_dir / "github_checks_execution.json").read_text())
+            self.assertEqual(execution["status"], "succeeded")
+            ci = json.loads((run_dir / "ci_results.json").read_text())
+            eval_results = json.loads((run_dir / "eval_results.json").read_text())
+            self.assertEqual(ci["status"], "passed")
+            self.assertEqual([check["status"] for check in ci["checks"]], ["passed", "skipped"])
+            self.assertEqual(eval_results["status"], "passed")
+            self.assertEqual(eval_results["checks"][0]["status"], "skipped")
+
+    def test_run_github_checks_command_marks_empty_failed_cli_output_as_failed_ci(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-github-checks-empty-failed-001")
+            fake_gh = root / "fake-gh"
+            fake_gh.write_text("#!/bin/sh\nexit 1\n")
+            fake_gh.chmod(0o755)
+            (run_dir / "pr_execution.json").write_text(json.dumps({"status": "succeeded", "number": 11}))
+            self.assertEqual(
+                main(
+                    [
+                        "github-checks-command",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-github-checks-empty-failed-001",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+
+            self.assertEqual(
+                main(["run-github-checks-command", "--target", str(root), "--run", "run-github-checks-empty-failed-001", "--timeout", "5"]),
+                1,
+            )
+
+            execution = json.loads((run_dir / "github_checks_execution.json").read_text())
+            ci = json.loads((run_dir / "ci_results.json").read_text())
+            self.assertEqual(execution["status"], "failed")
+            self.assertEqual(ci["status"], "failed")
+            self.assertEqual(ci["checks"][0]["status"], "failed")
+
+    def test_run_github_checks_command_preserves_existing_eval_results_without_eval_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-github-checks-preserve-eval-001")
+            fake_gh = root / "fake-gh"
+            fake_gh.write_text(
+                "#!/bin/sh\n"
+                "printf '[{\"name\":\"unit\",\"bucket\":\"pass\",\"state\":\"SUCCESS\",\"workflow\":\"ci\"}]'\n"
+            )
+            fake_gh.chmod(0o755)
+            existing_eval = {"status": "failed", "checks": [{"name": "quality", "status": "failed"}]}
+            (run_dir / "eval_results.json").write_text(json.dumps(existing_eval))
+            (run_dir / "pr_execution.json").write_text(json.dumps({"status": "succeeded", "number": 12}))
+            self.assertEqual(
+                main(
+                    [
+                        "github-checks-command",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-github-checks-preserve-eval-001",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+
+            self.assertEqual(
+                main(["run-github-checks-command", "--target", str(root), "--run", "run-github-checks-preserve-eval-001", "--timeout", "5"]),
+                0,
+            )
+
+            execution = json.loads((run_dir / "github_checks_execution.json").read_text())
+            eval_results = json.loads((run_dir / "eval_results.json").read_text())
+            self.assertEqual(execution["eval_status"], "failed")
+            self.assertEqual(eval_results, existing_eval)
+
+    def test_run_github_checks_command_marks_empty_successful_checks_as_pending_ci(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-github-checks-empty-success-001")
+            fake_gh = root / "fake-gh"
+            fake_gh.write_text("#!/bin/sh\nprintf '[]'\n")
+            fake_gh.chmod(0o755)
+            (run_dir / "pr_execution.json").write_text(json.dumps({"status": "succeeded", "number": 13}))
+            self.assertEqual(
+                main(
+                    [
+                        "github-checks-command",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-github-checks-empty-success-001",
+                        "--executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+
+            self.assertEqual(
+                main(["run-github-checks-command", "--target", str(root), "--run", "run-github-checks-empty-success-001", "--timeout", "5"]),
+                0,
+            )
+
+            execution = json.loads((run_dir / "github_checks_execution.json").read_text())
+            ci = json.loads((run_dir / "ci_results.json").read_text())
+            self.assertEqual(execution["ci_status"], "pending")
+            self.assertEqual(ci["status"], "pending")
+            self.assertEqual(ci["checks"][0]["status"], "pending")
+
+    def test_run_github_checks_command_rejects_mutated_argv(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_writer_run(root, "run-github-checks-policy-001")
+            fake_gh = root / "fake-gh"
+            fake_gh.write_text("#!/bin/sh\necho '[]'\n")
+            fake_gh.chmod(0o755)
+            (run_dir / "pr_execution.json").write_text(json.dumps({"status": "succeeded", "number": 9}))
+            self.assertEqual(
+                main(["github-checks-command", "--target", str(root), "--run", "run-github-checks-policy-001", "--executable", str(fake_gh)]),
+                0,
+            )
+            command = json.loads((run_dir / "github_checks_command.json").read_text())
+            command["argv"] = [sys.executable, "-c", "print('mutated checks')"]
+            (run_dir / "github_checks_command.json").write_text(json.dumps(command))
+
+            self.assertEqual(main(["run-github-checks-command", "--target", str(root), "--run", "run-github-checks-policy-001", "--timeout", "5"]), 1)
+            self.assertFalse((run_dir / "github_checks_execution.json").exists())
 
     def test_ci_eval_gate_blocks_missing_or_failed_results_and_passes_green_results(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1138,6 +1450,42 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(main(["run-push-command", "--target", str(root), "--run", "run-push-policy-001", "--timeout", "5"]), 1)
             self.assertFalse((run_dir / "push_execution.json").exists())
 
+    def test_integration_command_merges_child_writer_branches_and_enables_push_chain(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._prepare_integration_fixture(root)
+
+            self.assertEqual(main(["run-integration-command", "--target", str(root), "--run", "run-integration-001", "--timeout", "10"]), 0)
+
+            execution = json.loads((run_dir / "integration_execution.json").read_text())
+            commit_execution = json.loads((run_dir / "commit_execution.json").read_text())
+            worktree = root / ".worktrees" / "run-integration-001-integration-agent"
+            self.assertEqual(execution["status"], "succeeded")
+            self.assertTrue(commit_execution["commit_sha"])
+            self.assertTrue((worktree / "backend.txt").exists())
+            self.assertTrue((worktree / "frontend.txt").exists())
+            self.assertEqual(main(["validation-gate", "--target", str(root), "--run", "run-integration-001", "--mode", "skip"]), 0)
+            self.assertEqual(main(["pr-gate", "--target", str(root), "--run", "run-integration-001"]), 0)
+            self.assertEqual(main(["push-command", "--target", str(root), "--run", "run-integration-001"]), 0)
+
+    def test_run_integration_command_rejects_mutated_steps(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._prepare_integration_fixture(
+                root,
+                schedule_run_id="run-schedule-integration-policy",
+                integration_run_id="run-integration-policy-001",
+            )
+            command = json.loads((run_dir / "integration_command.json").read_text())
+            command["steps"][0]["argv"] = ["git", "status"]
+            (run_dir / "integration_command.json").write_text(json.dumps(command))
+
+            self.assertEqual(
+                main(["run-integration-command", "--target", str(root), "--run", "run-integration-policy-001", "--timeout", "10"]),
+                1,
+            )
+            self.assertFalse((run_dir / "integration_execution.json").exists())
+
     def test_dispatch_run_chains_connector_validation_and_pr_gate(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1395,6 +1743,197 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(json.loads((child_dir / "push_execution.json").read_text())["status"], "succeeded")
             self.assertTrue((child_dir / "pr_command.json").exists())
             self.assertEqual(self._remote_branch_sha(remote, "ai/issue-123/backend-implementer/" + child_run_id), child["commit_sha"])
+
+    def test_dispatch_run_does_not_commit_runtime_skill_sync_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            remote = root / "origin.git"
+            main(["init", "--target", str(root)])
+            self._install_writing_test_connector(root)
+            self._init_git_repo(root)
+            self._init_bare_remote(root, remote)
+            plan = root / "schedule_plan.json"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T-skills",
+                                "mode": "writer",
+                                "depends_on": [],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                                "success_criteria": ["Connector writes a change"],
+                            }
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "dispatch-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-dispatch-skill-ignore-001",
+                        "--validation-mode",
+                        "skip",
+                        "--timeout",
+                        "5",
+                        "--commit-and-push",
+                        "--push-remote",
+                        "origin",
+                    ]
+                ),
+                0,
+            )
+
+            schedule_dir = root / ".ai" / "runs" / "run-dispatch-skill-ignore-001"
+            child = json.loads((schedule_dir / "dispatch_run.json").read_text())["children"][0]
+            child_run_id = "run-dispatch-skill-ignore-001-T-skills-backend-implementer"
+            worktree = root / ".worktrees" / f"{child_run_id}-backend-implementer"
+            self.assertTrue((worktree / ".agents" / "skills" / "backend-implementation" / "SKILL.md").exists())
+
+            import subprocess
+
+            result = subprocess.run(
+                ["git", "show", "--name-only", "--pretty=format:", child["commit_sha"]],
+                cwd=worktree,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            committed_paths = {line for line in result.stdout.splitlines() if line.strip()}
+            self.assertIn("AGENTS.md", committed_paths)
+            self.assertFalse(any(path.startswith(".agents/skills/") for path in committed_paths))
+            self.assertFalse(any(path.startswith(".claude/skills/") for path in committed_paths))
+
+    def test_automation_run_writes_top_level_summary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            self._install_test_connector(root)
+            self._init_git_repo(root)
+            plan = root / "automation_schedule_plan.json"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T-auto",
+                                "mode": "writer",
+                                "depends_on": [],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                                "success_criteria": ["Connector succeeds"],
+                            }
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "automation-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-automation-001",
+                        "--validation-mode",
+                        "skip",
+                    ]
+                ),
+                0,
+            )
+
+            schedule_dir = root / ".ai" / "runs" / "run-automation-001"
+            child_dir = root / ".ai" / "runs" / "run-automation-001-T-auto-backend-implementer"
+            summary = json.loads((schedule_dir / "automation_run.json").read_text())
+            self.assertEqual(summary["status"], "succeeded")
+            self.assertEqual(summary["dispatch_status"], "succeeded")
+            self.assertTrue((child_dir / "skill_sync.json").exists())
+            self.assertTrue((child_dir / "connector_execution.json").exists())
+            self.assertTrue((child_dir / "pr_gate.json").exists())
+
+    def test_automation_run_skips_publication_phases_for_read_only_children(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            self._install_test_connector(root)
+            self._bind_agent_to_test_connector(root, "pr-reviewer")
+            plan = root / "automation_readonly_schedule_plan.json"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "pr-reviewer",
+                                "task_id": "T-review",
+                                "mode": "read_only",
+                                "depends_on": [],
+                                "expected_output": "review_findings",
+                                "requires_pr": False,
+                                "risk_level": "low",
+                                "success_criteria": ["Review completes"],
+                            }
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "automation-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-automation-readonly-001",
+                        "--no-worktree",
+                        "--validation-mode",
+                        "skip",
+                        "--github-checks",
+                        "--lifecycle",
+                    ]
+                ),
+                0,
+            )
+
+            schedule_dir = root / ".ai" / "runs" / "run-automation-readonly-001"
+            child_dir = root / ".ai" / "runs" / "run-automation-readonly-001-T-review-pr-reviewer"
+            summary = json.loads((schedule_dir / "automation_run.json").read_text())
+            child = summary["children"][0]
+            self.assertEqual(summary["status"], "succeeded")
+            self.assertEqual(child["status"], "succeeded")
+            self.assertEqual(child["publication_status"], "skipped")
+            self.assertFalse((child_dir / "github_checks_command.json").exists())
+            self.assertFalse((child_dir / "lifecycle_run.json").exists())
 
     def test_dispatch_plan_rejects_unknown_dependency_and_cycles(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1710,6 +2249,16 @@ class HarnessCliTests(unittest.TestCase):
         )
         assignments.write_text(text)
 
+    def _bind_agent_to_test_connector(self, root: Path, agent_id: str) -> None:
+        assignments = root / ".ai" / "private" / "assignments.yml"
+        lines = assignments.read_text().splitlines()
+        for index, line in enumerate(lines):
+            if line == f"  {agent_id}:":
+                lines[index + 1] = "    connector: test-cli"
+                lines[index + 2] = "    profile: test-profile"
+                break
+        assignments.write_text("\n".join(lines) + "\n")
+
     def _install_writing_test_connector(self, root: Path) -> None:
         connector = root / ".ai" / "connectors" / "test-cli.yml"
         connector.write_text(
@@ -1814,6 +2363,122 @@ class HarnessCliTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         return result.stdout.strip()
+
+    def _prepare_integration_fixture(
+        self,
+        root: Path,
+        schedule_run_id: str = "run-schedule-integration",
+        integration_run_id: str = "run-integration-001",
+    ) -> Path:
+        plan = root / f"{schedule_run_id}.json"
+        main(["init", "--target", str(root)])
+        plan.write_text(
+            json.dumps(
+                {
+                    "run_plan": [
+                        {
+                            "agent_id": "backend-implementer",
+                            "task_id": "T-backend",
+                            "mode": "writer",
+                            "depends_on": [],
+                            "expected_output": "branch_pr",
+                            "requires_pr": True,
+                            "risk_level": "medium",
+                            "success_criteria": ["Backend branch is mergeable"],
+                        },
+                        {
+                            "agent_id": "frontend-implementer",
+                            "task_id": "T-frontend",
+                            "mode": "writer",
+                            "depends_on": [],
+                            "expected_output": "branch_pr",
+                            "requires_pr": True,
+                            "risk_level": "medium",
+                            "success_criteria": ["Frontend branch is mergeable"],
+                        },
+                    ],
+                    "blocked": [],
+                    "risk_notes": [],
+                }
+            )
+        )
+        self._init_git_repo(root)
+        self.assertEqual(
+            main(
+                [
+                    "dispatch-plan",
+                    "--target",
+                    str(root),
+                    "--issue",
+                    "123",
+                    "--plan",
+                    str(plan),
+                    "--run-id",
+                    schedule_run_id,
+                    "--no-worktree",
+                ]
+            ),
+            0,
+        )
+        schedule_dir = root / ".ai" / "runs" / schedule_run_id
+        for index, line in enumerate((schedule_dir / "dispatch_log.jsonl").read_text().splitlines(), start=1):
+            entry = json.loads(line)
+            child_dir = root / ".ai" / "runs" / entry["run_id"]
+            child_run = json.loads((child_dir / "run.json").read_text())
+            filename = "backend.txt" if entry["agent_id"] == "backend-implementer" else "frontend.txt"
+            self._create_branch(root, child_run["branch"])
+            self._commit_file_on_branch(root, child_run["branch"], filename, f"{entry['agent_id']} integration content\n")
+            (child_dir / "pr_execution.json").write_text(
+                json.dumps(
+                    {
+                        "status": "succeeded",
+                        "number": index,
+                        "url": f"https://github.com/acme/repo/pull/{index}",
+                    }
+                )
+            )
+
+        self.assertEqual(
+            main(
+                [
+                    "integration-plan",
+                    "--target",
+                    str(root),
+                    "--issue",
+                    "123",
+                    "--schedule-run",
+                    schedule_run_id,
+                    "--run-id",
+                    integration_run_id,
+                ]
+            ),
+            0,
+        )
+        self.assertEqual(main(["integration-command", "--target", str(root), "--run", integration_run_id]), 0)
+        return root / ".ai" / "runs" / integration_run_id
+
+    def _commit_file_on_branch(self, root: Path, branch: str, relpath: str, content: str) -> None:
+        import subprocess
+
+        current = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=root,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout.strip()
+        subprocess.run(["git", "checkout", branch], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (root / relpath).write_text(content)
+        subprocess.run(["git", "add", relpath], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", f"Add {relpath}"],
+            cwd=root,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        subprocess.run(["git", "checkout", current], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def test_dispatch_plan_rejects_runtime_visible_to_scheduler(self):
         with tempfile.TemporaryDirectory() as temp:

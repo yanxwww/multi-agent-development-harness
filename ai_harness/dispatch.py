@@ -34,6 +34,7 @@ EXPECTED_OUTPUTS = {
     "review_findings",
     "test_report",
     "skill_update_pr",
+    "integration_pr",
     "schedule_plan",
     "risk_approval",
 }

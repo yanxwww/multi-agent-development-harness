@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from .automation import run_automation
 from .connectors import render_connector_command
 from .dispatch import dispatch_plan
 from .executor import run_connector_command
@@ -15,6 +16,8 @@ from .git_publish import (
     run_diff_gate,
     run_push_command,
 )
+from .github import render_github_checks_command, run_github_checks_command, run_github_doctor
+from .integration import render_integration_command, render_integration_plan, run_integration_command
 from .lifecycle import (
     acquire_writer_lock,
     render_skill_evolution_plan,
@@ -29,6 +32,7 @@ from .orchestrator import dispatch_run
 from .pull_requests import render_merge_command, render_pr_command, run_merge_command, run_pr_command
 from .runs import create_run, render_pr_body
 from .scaffold import init_scaffold
+from .skill_sync import sync_run_skills
 from .validation import validate_scaffold
 
 
@@ -83,6 +87,10 @@ def build_parser() -> argparse.ArgumentParser:
     pr_parser = subparsers.add_parser("pr-body", help="Render a PR body from a run evidence bundle.")
     pr_parser.add_argument("--target", default=".", help="Target repository root.")
     pr_parser.add_argument("--run", required=True, help="Run id.")
+
+    skill_sync_parser = subparsers.add_parser("skill-sync", help="Install allowlisted run skills into the bound runtime skill directory.")
+    skill_sync_parser.add_argument("--target", default=".", help="Target repository root.")
+    skill_sync_parser.add_argument("--run", required=True, help="Run id.")
 
     connector_parser = subparsers.add_parser("connector-command", help="Render the CLI connector command for a run.")
     connector_parser.add_argument("--target", default=".", help="Target repository root.")
@@ -157,6 +165,40 @@ def build_parser() -> argparse.ArgumentParser:
     run_push_command_parser.add_argument("--run", required=True, help="Run id.")
     run_push_command_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds for git push.")
 
+    integration_plan_parser = subparsers.add_parser("integration-plan", help="Create an integration-agent run from writer child PRs.")
+    integration_plan_parser.add_argument("--target", default=".", help="Target repository root.")
+    integration_plan_parser.add_argument("--issue", required=True, help="Issue id, such as 123 or issue-123.")
+    integration_plan_parser.add_argument("--schedule-run", required=True, help="Schedule run id containing child writer runs.")
+    integration_plan_parser.add_argument("--run-id", required=True, help="Integration run id.")
+    integration_plan_parser.add_argument("--base-ref", default="HEAD", help="Git base ref for integration worktree creation.")
+    integration_plan_parser.add_argument("--no-worktree", action="store_true", help="Create metadata without a worktree.")
+
+    integration_command_parser = subparsers.add_parser("integration-command", help="Render deterministic integration merge steps.")
+    integration_command_parser.add_argument("--target", default=".", help="Target repository root.")
+    integration_command_parser.add_argument("--run", required=True, help="Integration run id.")
+
+    run_integration_command_parser = subparsers.add_parser("run-integration-command", help="Execute deterministic integration merge steps.")
+    run_integration_command_parser.add_argument("--target", default=".", help="Target repository root.")
+    run_integration_command_parser.add_argument("--run", required=True, help="Integration run id.")
+    run_integration_command_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per integration step.")
+
+    github_doctor_parser = subparsers.add_parser("github-doctor", help="Check GitHub CLI readiness for deterministic PR automation.")
+    github_doctor_parser.add_argument("--target", default=".", help="Target repository root.")
+    github_doctor_parser.add_argument("--executable", default="gh", help="GitHub CLI executable.")
+
+    github_checks_command_parser = subparsers.add_parser("github-checks-command", help="Render a gh pr checks command for a created PR.")
+    github_checks_command_parser.add_argument("--target", default=".", help="Target repository root.")
+    github_checks_command_parser.add_argument("--run", required=True, help="Run id.")
+    github_checks_command_parser.add_argument("--executable", default="gh", help="GitHub CLI executable.")
+    github_checks_command_parser.add_argument("--watch", action="store_true", help="Wait for GitHub checks to complete.")
+    github_checks_command_parser.add_argument("--interval", type=int, default=10, help="Polling interval seconds when --watch is used.")
+
+    run_github_checks_command_parser = subparsers.add_parser("run-github-checks-command", help="Execute a rendered GitHub checks command.")
+    run_github_checks_command_parser.add_argument("--target", default=".", help="Target repository root.")
+    run_github_checks_command_parser.add_argument("--run", required=True, help="Run id.")
+    run_github_checks_command_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds for GitHub checks.")
+    run_github_checks_command_parser.add_argument("--eval-results", help="Optional eval results JSON file to attach to the run.")
+
     ci_eval_gate_parser = subparsers.add_parser("ci-eval-gate", help="Evaluate CI and eval readiness for a run.")
     ci_eval_gate_parser.add_argument("--target", default=".", help="Target repository root.")
     ci_eval_gate_parser.add_argument("--run", required=True, help="Run id.")
@@ -229,6 +271,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prepare dispatch metadata without creating git worktrees.",
     )
 
+    automation_run_parser = subparsers.add_parser("automation-run", help="Run the deterministic automation lifecycle from a SchedulePlan.")
+    automation_run_parser.add_argument("--target", default=".", help="Target repository root.")
+    automation_run_parser.add_argument("--issue", required=True, help="Issue id, such as 123 or issue-123.")
+    automation_run_parser.add_argument("--plan", required=True, help="Path to SchedulePlan JSON.")
+    automation_run_parser.add_argument("--run-id", required=True, help="Schedule run id.")
+    automation_run_parser.add_argument("--base-ref", default="HEAD", help="Git base ref for worktree creation.")
+    automation_run_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per deterministic command.")
+    automation_run_parser.add_argument("--retries", type=int, default=0, help="Retry count after failed connector attempts.")
+    automation_run_parser.add_argument("--validation-mode", choices=["run", "skip"], default="run", help="Validation mode.")
+    automation_run_parser.add_argument("--no-worktree", action="store_true", help="Prepare metadata without creating git worktrees.")
+    automation_run_parser.add_argument("--prepare-pr-command", action="store_true", help="Render PR create commands for child writer runs.")
+    automation_run_parser.add_argument("--pr-base", default="main", help="Base branch for prepared PR commands.")
+    automation_run_parser.add_argument("--draft-pr", action="store_true", help="Render prepared PR commands as drafts.")
+    automation_run_parser.add_argument("--commit-and-push", action="store_true", help="Commit and push writer runs before PR command preparation.")
+    automation_run_parser.add_argument("--push-remote", default="origin", help="Git remote used by --commit-and-push.")
+    automation_run_parser.add_argument("--run-pr-command", action="store_true", help="Execute prepared PR create commands.")
+    automation_run_parser.add_argument("--github-checks", action="store_true", help="Render and execute GitHub PR checks commands.")
+    automation_run_parser.add_argument("--gh-executable", default="gh", help="GitHub CLI executable.")
+    automation_run_parser.add_argument("--checks-watch", action="store_true", help="Wait for GitHub checks when --github-checks is set.")
+    automation_run_parser.add_argument("--checks-interval", type=int, default=10, help="Polling interval for --checks-watch.")
+    automation_run_parser.add_argument("--lifecycle", action="store_true", help="Run CI/Eval, review, risk, merge, and skill gates.")
+    automation_run_parser.add_argument("--skill-run-id", help="Suggested skill evolution schedule run id for lifecycle.")
+    automation_run_parser.add_argument("--integration-run-id", help="Create and execute an integration-agent run after child publication.")
+
     return parser
 
 
@@ -275,6 +341,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "pr-body":
             body_path = render_pr_body(target=target, run_id=args.run)
             print(f"Wrote PR body to {body_path}")
+            return 0
+        if args.command == "skill-sync":
+            manifest = sync_run_skills(target=target, run_id=args.run)
+            print(f"Synced {len(manifest['skills'])} skills to {manifest['destination']} for {args.run}")
             return 0
         if args.command == "connector-command":
             command_path = render_connector_command(
@@ -354,6 +424,48 @@ def main(argv: list[str] | None = None) -> int:
             execution = run_push_command(target=target, run_id=args.run, timeout_seconds=args.timeout)
             print(f"Push command {execution['status']} for {args.run}")
             return 0 if execution["status"] == "succeeded" else 1
+        if args.command == "integration-plan":
+            plan_path = render_integration_plan(
+                target=target,
+                issue=args.issue,
+                schedule_run_id=args.schedule_run,
+                run_id=args.run_id,
+                base_ref=args.base_ref,
+                create_worktree=not args.no_worktree,
+            )
+            print(f"Wrote integration plan to {plan_path}")
+            return 0
+        if args.command == "integration-command":
+            command_path = render_integration_command(target=target, run_id=args.run)
+            print(f"Wrote integration command to {command_path}")
+            return 0
+        if args.command == "run-integration-command":
+            execution = run_integration_command(target=target, run_id=args.run, timeout_seconds=args.timeout)
+            print(f"Integration command {execution['status']} for {args.run}")
+            return 0 if execution["status"] == "succeeded" else 1
+        if args.command == "github-doctor":
+            doctor = run_github_doctor(target=target, executable=args.executable)
+            print(f"GitHub doctor {doctor['status']} at {target}")
+            return 0 if doctor["status"] == "passed" else 1
+        if args.command == "github-checks-command":
+            command_path = render_github_checks_command(
+                target=target,
+                run_id=args.run,
+                executable=args.executable,
+                watch=args.watch,
+                interval=args.interval,
+            )
+            print(f"Wrote GitHub checks command to {command_path}")
+            return 0
+        if args.command == "run-github-checks-command":
+            execution = run_github_checks_command(
+                target=target,
+                run_id=args.run,
+                timeout_seconds=args.timeout,
+                eval_results_path=Path(args.eval_results).expanduser().resolve() if args.eval_results else None,
+            )
+            print(f"GitHub checks command {execution['status']} for {args.run}")
+            return 0 if execution["status"] == "succeeded" else 1
         if args.command == "ci-eval-gate":
             gate = run_ci_eval_gate(target=target, run_id=args.run)
             print(f"CI/Eval gate {gate['status']} for {args.run}")
@@ -409,6 +521,33 @@ def main(argv: list[str] | None = None) -> int:
                 push_remote=args.push_remote,
             )
             print(f"Dispatch run {summary['status']} for {args.run_id}")
+            return 0 if summary["status"] == "succeeded" else 1
+        if args.command == "automation-run":
+            summary = run_automation(
+                target=target,
+                issue=args.issue,
+                plan_path=Path(args.plan).expanduser().resolve(),
+                run_id=args.run_id,
+                timeout_seconds=args.timeout,
+                retries=args.retries,
+                validation_mode=args.validation_mode,
+                create_worktree=not args.no_worktree,
+                base_ref=args.base_ref,
+                prepare_pr_command=args.prepare_pr_command,
+                pr_base=args.pr_base,
+                draft_pr=args.draft_pr,
+                commit_and_push=args.commit_and_push,
+                push_remote=args.push_remote,
+                run_pr_commands=args.run_pr_command,
+                github_checks=args.github_checks,
+                gh_executable=args.gh_executable,
+                checks_watch=args.checks_watch,
+                checks_interval=args.checks_interval,
+                lifecycle=args.lifecycle,
+                skill_run_id=args.skill_run_id,
+                integration_run_id=args.integration_run_id,
+            )
+            print(f"Automation run {summary['status']} for {args.run_id}")
             return 0 if summary["status"] == "succeeded" else 1
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)

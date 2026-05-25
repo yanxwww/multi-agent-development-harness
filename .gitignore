@@ -1,5 +1,9 @@
 .worktrees/
 CLAUDE.md
+.agents/skills/*
+!.agents/skills/.gitkeep
+.claude/skills/*
+!.claude/skills/.gitkeep
 .ai/runs/*
 !.ai/runs/.gitkeep
 __pycache__/

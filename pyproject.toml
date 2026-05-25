@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-development-harness"
-version = "0.12.0"
+version = "0.13.0"
 description = "A neutral Codex / Claude Code AI automation development harness scaffold."
 requires-python = ">=3.11"
 readme = "README.md"
