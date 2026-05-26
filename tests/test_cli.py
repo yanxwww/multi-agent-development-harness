@@ -534,6 +534,60 @@ class HarnessCliTests(unittest.TestCase):
             self.assertIn("connector_attempt_finished", trace)
             self.assertIn("connector_run_finished", trace)
 
+    def test_run_connector_extracts_runtime_session_for_resume(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_run(root, "run-exec-session-001")
+            command = {
+                "run_id": "run-exec-session-001",
+                "agent_id": "backend-implementer",
+                "connector": "codex-cli",
+                "profile": "writer-workspace",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import json\n"
+                        "print(json.dumps({'type':'thread.started','thread_id':'thread-resume-123'}))\n"
+                        "print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'Need continuation'}}))\n"
+                    ),
+                ],
+            }
+            (run_dir / "connector_command.json").write_text(json.dumps(command))
+
+            self.assertEqual(main(["run-connector", "--target", str(root), "--run", "run-exec-session-001", "--timeout", "5"]), 0)
+
+            execution = json.loads((run_dir / "connector_execution.json").read_text())
+            self.assertEqual(execution["runtime_session"]["id"], "thread-resume-123")
+            self.assertEqual(execution["runtime_session"]["kind"], "codex_thread")
+            self.assertEqual(execution["runtime_session"]["resume_mode"], "cli_resume")
+            self.assertEqual(execution["last_agent_message"], "Need continuation")
+
+            claude_run_dir = self._make_manual_run(root, "run-exec-session-002")
+            claude_command = {
+                "run_id": "run-exec-session-002",
+                "agent_id": "frontend-implementer",
+                "connector": "claude-code-cli",
+                "profile": "writer-workspace",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import json\n"
+                        "print(json.dumps({'session_id':'claude-session-456','result':'Claude continuation needed'}))\n"
+                    ),
+                ],
+            }
+            (claude_run_dir / "connector_command.json").write_text(json.dumps(claude_command))
+
+            self.assertEqual(main(["run-connector", "--target", str(root), "--run", "run-exec-session-002", "--timeout", "5"]), 0)
+
+            claude_execution = json.loads((claude_run_dir / "connector_execution.json").read_text())
+            self.assertEqual(claude_execution["runtime_session"]["id"], "claude-session-456")
+            self.assertEqual(claude_execution["runtime_session"]["kind"], "claude_session")
+            self.assertEqual(claude_execution["runtime_session"]["resume_mode"], "cli_resume")
+            self.assertEqual(claude_execution["last_agent_message"], "Claude continuation needed")
+
     def test_run_connector_retries_until_success(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -2845,6 +2899,37 @@ class HarnessCliTests(unittest.TestCase):
             state = json.loads((root / ".ai" / "local-daemon" / "state.json").read_text())
             self.assertNotIn("issue-42-ai-auto", state["processed_event_ids"])
             self.assertEqual(state["retry_events"]["issue-42-ai-auto"]["attempts"], 1)
+            previous_run_dir = root / ".ai" / "runs" / first["automation_run_id"]
+            previous_run_dir.mkdir(parents=True, exist_ok=True)
+            previous_child_dir = root / ".ai" / "runs" / "run-local-child-001"
+            previous_child_dir.mkdir(parents=True, exist_ok=True)
+            (previous_run_dir / "automation_run.json").write_text(
+                json.dumps(
+                    {
+                        "children": [
+                            {
+                                "run_id": "run-local-child-001",
+                                "agent_id": "backend-implementer",
+                                "status": "failed",
+                                "connector_status": "failed",
+                            }
+                        ]
+                    }
+                )
+            )
+            (previous_child_dir / "connector_execution.json").write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "runtime_session": {
+                            "kind": "codex_thread",
+                            "id": "thread-private-001",
+                            "resume_mode": "cli_resume",
+                        },
+                        "last_agent_message": "I only produced next-step advice.",
+                    }
+                )
+            )
 
             self.assertEqual(
                 main(
@@ -2892,6 +2977,24 @@ class HarnessCliTests(unittest.TestCase):
             third_task = json.loads((event_dir / "scheduler_task.json").read_text())
             self.assertEqual(third_task["retry_context"]["previous_result"]["status"], "failed")
             self.assertEqual(third_task["retry_context"]["previous_retry"]["attempts"], 1)
+            self.assertEqual(
+                third_task["runtime_state_request_artifact"],
+                ".ai/local-daemon/events/issue-42-ai-auto/runtime_state_request.json",
+            )
+            self.assertEqual(third_task["runtime_state_request"]["assessor_agent_id"], "scheduler-agent")
+            runtime_state_request = json.loads((event_dir / "runtime_state_request.json").read_text())
+            self.assertEqual(runtime_state_request["assessor_agent_id"], "scheduler-agent")
+            self.assertEqual(third_task["runtime_state_request"], runtime_state_request)
+            self.assertEqual(runtime_state_request["observed"]["completion_status"], "incomplete")
+            self.assertIn("resume_runtime_session", runtime_state_request["decision_contract"]["allowed_decisions"])
+            self.assertIn("repair_new_run", runtime_state_request["decision_contract"]["allowed_decisions"])
+            self.assertEqual(runtime_state_request["runtime_observations"][0]["agent_id"], "backend-implementer")
+            self.assertTrue(runtime_state_request["runtime_observations"][0]["resume_available"])
+            self.assertEqual(
+                runtime_state_request["runtime_observations"][0]["last_agent_message"],
+                "I only produced next-step advice.",
+            )
+            self.assertNotIn("thread-private-001", json.dumps(runtime_state_request))
             dead_letter = root / ".ai" / "local-daemon" / "dead-letter" / "issue-42-ai-auto" / "dead_letter.json"
             self.assertTrue(dead_letter.exists())
             state = json.loads((root / ".ai" / "local-daemon" / "state.json").read_text())
