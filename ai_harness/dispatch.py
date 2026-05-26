@@ -14,8 +14,19 @@ class DispatchError(Exception):
     pass
 
 
-FORBIDDEN_SCHEDULER_KEYS = {"runtime", "runtime_id", "connector", "connector_profile", "model", "api_key"}
-PLAN_KEYS = {"run_plan", "blocked", "risk_notes"}
+FORBIDDEN_SCHEDULER_KEYS = {
+    "runtime",
+    "runtime_id",
+    "runtime_session",
+    "runtime_session_id",
+    "session_id",
+    "thread_id",
+    "connector",
+    "connector_profile",
+    "model",
+    "api_key",
+}
+PLAN_KEYS = {"run_plan", "blocked", "risk_notes", "runtime_state_decision"}
 RUN_PLAN_ITEM_KEYS = {
     "agent_id",
     "task_id",
@@ -40,6 +51,13 @@ EXPECTED_OUTPUTS = {
 }
 RISK_LEVELS = {"low", "medium", "high"}
 MODES = {"read_only", "writer"}
+RUNTIME_STATE_DECISIONS = {
+    "resume_runtime_session",
+    "repair_new_run",
+    "mark_completed",
+    "dead_letter",
+    "stop_blocked",
+}
 
 
 def dispatch_plan(
@@ -151,7 +169,29 @@ def dispatch_plan(
 
 def validate_schedule_plan_document(plan: Any) -> None:
     _validate_schedule_plan(plan)
+    if "runtime_state_decision" in plan:
+        validate_runtime_state_decision_document(plan["runtime_state_decision"])
     _validate_dependency_graph(plan["run_plan"])
+
+
+def validate_runtime_state_decision_document(decision: Any) -> None:
+    if not isinstance(decision, dict):
+        raise DispatchError("runtime_state_decision must be an object")
+    _reject_forbidden_scheduler_keys(decision, "$.runtime_state_decision")
+    allowed_keys = {"assessor_agent_id", "decision", "target_run_id", "reason", "continuation_prompt"}
+    extra = sorted(set(decision) - allowed_keys)
+    if extra:
+        raise DispatchError(f"runtime_state_decision has unknown keys: {extra}")
+    required = ["assessor_agent_id", "decision", "target_run_id", "reason", "continuation_prompt"]
+    for key in required:
+        if key not in decision:
+            raise DispatchError(f"runtime_state_decision missing required key: {key}")
+        if not isinstance(decision[key], str) or not decision[key].strip():
+            raise DispatchError(f"runtime_state_decision.{key} must be a non-empty string")
+    if decision["assessor_agent_id"] != "scheduler-agent":
+        raise DispatchError("runtime_state_decision.assessor_agent_id must be scheduler-agent")
+    if decision["decision"] not in RUNTIME_STATE_DECISIONS:
+        raise DispatchError(f"runtime_state_decision has invalid decision: {decision['decision']}")
 
 
 def _validate_schedule_plan(plan: Any) -> None:

@@ -43,13 +43,14 @@ Given issue state, task graph state, pull request state, CI state, review findin
 ## Output
 
 Return only a SchedulePlan JSON object matching `.ai/schemas/schedule_plan.schema.json`.
+When a scheduler task includes `runtime_state_request`, include the optional `runtime_state_decision` object in that SchedulePlan.
 
 ## Runtime State Assessment
 
 When a scheduler task includes `runtime_state_request`, first assess whether the previous runtime attempt is complete, incomplete, blocked, or unknown.
 Use the request to decide whether to schedule continuation, repair, review, or stop.
 Do not choose a connector, model, raw session id, shell command, or CLI flag.
-If the correct action is to continue the same runtime session, schedule the same agent identity and let the deterministic dispatcher resolve the private resume command.
+If the correct action is to continue the same runtime session, set `runtime_state_decision.decision` to `resume_runtime_session`, target the observed `run_id`, schedule the same agent identity, and let the deterministic dispatcher resolve the private resume command.
 
 ## Do Not
 
@@ -1115,6 +1116,33 @@ SCHEMAS = {
                 },
             },
             "risk_notes": {"type": "array", "items": {"type": "string"}},
+            "runtime_state_decision": {
+                "type": "object",
+                "required": [
+                    "assessor_agent_id",
+                    "decision",
+                    "target_run_id",
+                    "reason",
+                    "continuation_prompt",
+                ],
+                "additionalProperties": False,
+                "properties": {
+                    "assessor_agent_id": {"const": "scheduler-agent"},
+                    "decision": {
+                        "type": "string",
+                        "enum": [
+                            "resume_runtime_session",
+                            "repair_new_run",
+                            "mark_completed",
+                            "dead_letter",
+                            "stop_blocked",
+                        ],
+                    },
+                    "target_run_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "continuation_prompt": {"type": "string"},
+                },
+            },
         },
     },
     "agent_run_request": {
