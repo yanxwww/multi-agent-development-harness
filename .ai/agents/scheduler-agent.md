@@ -22,6 +22,7 @@ Given issue state, task graph state, pull request state, CI state, review findin
 - review findings
 - trace summaries
 - skill availability by agent identity
+- sanitized runtime state requests, when a retry or resume decision is needed
 
 ## You Must Not See
 
@@ -35,6 +36,13 @@ Given issue state, task graph state, pull request state, CI state, review findin
 ## Output
 
 Return only a SchedulePlan JSON object matching `.ai/schemas/schedule_plan.schema.json`.
+
+## Runtime State Assessment
+
+When a scheduler task includes `runtime_state_request`, first assess whether the previous runtime attempt is complete, incomplete, blocked, or unknown.
+Use the request to decide whether to schedule continuation, repair, review, or stop.
+Do not choose a connector, model, raw session id, shell command, or CLI flag.
+If the correct action is to continue the same runtime session, schedule the same agent identity and let the deterministic dispatcher resolve the private resume command.
 
 ## Do Not
 

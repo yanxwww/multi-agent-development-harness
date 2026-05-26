@@ -132,6 +132,18 @@ def run_github_sync_poll(
             )
             if retry_context is not None:
                 task["retry_context"] = retry_context
+                runtime_state_request = _runtime_state_request(
+                    target=target,
+                    event_dir=event_dir,
+                    retry_record=retry_record,
+                    retry_context=retry_context,
+                    attempt=attempt,
+                    retry_requested=retry_requested,
+                )
+                runtime_state_request_path = event_dir / "runtime_state_request.json"
+                runtime_state_request_path.write_text(json.dumps(runtime_state_request, indent=2) + "\n")
+                task["runtime_state_request"] = runtime_state_request
+                task["runtime_state_request_artifact"] = str(runtime_state_request_path.relative_to(target))
             task_path = event_dir / "scheduler_task.json"
             task_path.write_text(json.dumps(task, indent=2) + "\n")
             created = {
@@ -534,6 +546,92 @@ def _summarize_event_result(result: dict[str, Any]) -> dict[str, Any]:
         ]
         if key in result
     }
+
+
+def _runtime_state_request(
+    target: Path,
+    event_dir: Path,
+    retry_record: dict[str, Any],
+    retry_context: dict[str, Any],
+    attempt: int,
+    retry_requested: bool,
+) -> dict[str, Any]:
+    previous_result = retry_context.get("previous_result", {})
+    observed = {
+        "status": previous_result.get("status", retry_record.get("status", "unknown")),
+        "completion_status": previous_result.get(
+            "completion_status",
+            retry_record.get("completion_status", "unknown"),
+        ),
+        "attempt": previous_result.get("attempt", retry_record.get("attempts", 0)),
+        "automation_run_id": previous_result.get("automation_run_id", retry_record.get("automation_run_id", "")),
+        "has_previous_result": bool(previous_result),
+    }
+    runtime_observations = _runtime_observations_for_previous_attempt(target, previous_result, retry_record)
+    return {
+        "assessor_agent_id": "scheduler-agent",
+        "event_dir": str(event_dir.relative_to(target)),
+        "resume_attempt": attempt,
+        "retry_requested": retry_requested,
+        "observed": observed,
+        "runtime_observations": runtime_observations,
+        "decision_contract": {
+            "allowed_decisions": [
+                "resume_runtime_session",
+                "repair_new_run",
+                "mark_completed",
+                "dead_letter",
+                "stop_blocked",
+            ],
+            "required_reason": True,
+            "scheduler_must_not_choose_runtime": True,
+        },
+        "instruction": (
+            "Assess the previous runtime state before planning continuation. "
+            "Use observed artifacts to decide whether the task is complete, should resume the same runtime session, "
+            "needs a fresh repair run, should remain quarantined, or must stop as blocked."
+        ),
+    }
+
+
+def _runtime_observations_for_previous_attempt(
+    target: Path,
+    previous_result: dict[str, Any],
+    retry_record: dict[str, Any],
+) -> list[dict[str, Any]]:
+    automation_run_id = str(previous_result.get("automation_run_id") or retry_record.get("automation_run_id") or "")
+    if not automation_run_id:
+        return []
+    automation = _read_json_object(target / ".ai" / "runs" / automation_run_id / "automation_run.json")
+    observations = []
+    for child in automation.get("children", []) if isinstance(automation.get("children"), list) else []:
+        if not isinstance(child, dict):
+            continue
+        child_run_id = str(child.get("run_id", ""))
+        if not child_run_id:
+            continue
+        execution = _read_json_object(target / ".ai" / "runs" / child_run_id / "connector_execution.json")
+        observation = {
+            "run_id": child_run_id,
+            "agent_id": child.get("agent_id", ""),
+            "status": child.get("status", execution.get("status", "unknown")),
+            "connector_status": child.get("connector_status", execution.get("status", "unknown")),
+            "resume_available": bool(execution.get("runtime_session")),
+        }
+        if execution.get("last_agent_message"):
+            observation["last_agent_message"] = execution["last_agent_message"]
+        observations.append(observation)
+    return observations
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _read_event_result(event_dir: Path) -> dict[str, Any]:

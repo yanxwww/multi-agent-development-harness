@@ -120,6 +120,11 @@ def run_connector_command(
         "stderr_log": "stderr.log",
         "events_log": "connector_events.jsonl",
     }
+    runtime_session, last_agent_message = _extract_runtime_observations(attempts)
+    if runtime_session:
+        execution["runtime_session"] = runtime_session
+    if last_agent_message:
+        execution["last_agent_message"] = last_agent_message
     (run_dir / "connector_execution.json").write_text(json.dumps(execution, indent=2) + "\n")
     _append_jsonl(
         trace_path,
@@ -197,6 +202,53 @@ def _capture_json_events(stdout: str, events_path: Path, attempt_number: int) ->
             if isinstance(event, dict):
                 event.setdefault("attempt", attempt_number)
                 events.write(json.dumps(event) + "\n")
+
+
+def _extract_runtime_observations(attempts: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str]:
+    runtime_session: dict[str, Any] | None = None
+    last_agent_message = ""
+    for attempt in attempts:
+        for event in _json_stdout_events(str(attempt.get("stdout", ""))):
+            if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str):
+                runtime_session = {
+                    "kind": "codex_thread",
+                    "id": event["thread_id"],
+                    "resume_mode": "cli_resume",
+                }
+            elif isinstance(event.get("session_id"), str):
+                runtime_session = {
+                    "kind": "claude_session",
+                    "id": event["session_id"],
+                    "resume_mode": "cli_resume",
+                }
+            message = _agent_message_text(event)
+            if message:
+                last_agent_message = message
+    return runtime_session, last_agent_message
+
+
+def _json_stdout_events(stdout: str) -> list[dict[str, Any]]:
+    events = []
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            value = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            events.append(value)
+    return events
+
+
+def _agent_message_text(event: dict[str, Any]) -> str:
+    item = event.get("item")
+    if isinstance(item, dict) and item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+        return item["text"]
+    if isinstance(event.get("result"), str):
+        return event["result"]
+    return ""
 
 
 def _append_jsonl(path: Path, event: dict[str, Any]) -> None:
