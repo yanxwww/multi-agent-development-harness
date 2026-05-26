@@ -34,6 +34,7 @@ from .local_daemon import run_github_sync_poll, run_local_daemon, sync_github_st
 from .orchestrator import dispatch_run
 from .pull_requests import render_merge_command, render_pr_command, run_merge_command, run_pr_command
 from .retention import run_artifact_retention_report
+from .resume import render_resume_command, run_resume_command
 from .runs import create_run, render_pr_body
 from .scaffold import init_scaffold
 from .scheduler import run_scheduler
@@ -131,6 +132,27 @@ def build_parser() -> argparse.ArgumentParser:
     run_connector_parser.add_argument("--run", required=True, help="Run id.")
     run_connector_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds per attempt.")
     run_connector_parser.add_argument("--retries", type=int, default=0, help="Retry count after failed attempts.")
+
+    resume_parser = subparsers.add_parser(
+        "resume-command",
+        help="Render a deterministic CLI resume command after scheduler requests runtime session resume.",
+    )
+    resume_parser.add_argument("--target", default=".", help="Target repository root.")
+    resume_parser.add_argument("--run", required=True, help="Run id.")
+    resume_parser.add_argument("--executable", help="Runtime executable override, such as codex or claude.")
+    resume_parser.add_argument(
+        "--output-schema",
+        default=".ai/schemas/agent_result.schema.json",
+        help="Schema path passed to the resumed runtime connector.",
+    )
+
+    run_resume_parser = subparsers.add_parser(
+        "run-resume-command",
+        help="Execute a rendered deterministic CLI resume command.",
+    )
+    run_resume_parser.add_argument("--target", default=".", help="Target repository root.")
+    run_resume_parser.add_argument("--run", required=True, help="Run id.")
+    run_resume_parser.add_argument("--timeout", type=float, default=900.0, help="Timeout seconds for the resume command.")
 
     validation_parser = subparsers.add_parser("validation-gate", help="Run or record validation gate results.")
     validation_parser.add_argument("--target", default=".", help="Target repository root.")
@@ -474,6 +496,19 @@ def main(argv: list[str] | None = None) -> int:
                 retries=args.retries,
             )
             print(f"Connector run {execution['status']} for {args.run}")
+            return 0 if execution["status"] == "succeeded" else 1
+        if args.command == "resume-command":
+            command_path = render_resume_command(
+                target=target,
+                run_id=args.run,
+                executable=args.executable,
+                output_schema=args.output_schema,
+            )
+            print(f"Wrote resume command to {command_path}")
+            return 0
+        if args.command == "run-resume-command":
+            execution = run_resume_command(target=target, run_id=args.run, timeout_seconds=args.timeout)
+            print(f"Resume command {execution['status']} for {args.run}")
             return 0 if execution["status"] == "succeeded" else 1
         if args.command == "validation-gate":
             gate = run_validation_gate(

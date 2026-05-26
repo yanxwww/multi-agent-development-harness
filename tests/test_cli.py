@@ -588,6 +588,180 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(claude_execution["runtime_session"]["resume_mode"], "cli_resume")
             self.assertEqual(claude_execution["last_agent_message"], "Claude continuation needed")
 
+    def test_resume_command_renders_codex_and_claude_cli_resume(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            codex_run_dir = self._make_manual_run(root, "run-resume-codex-001")
+            codex_run = json.loads((codex_run_dir / "run.json").read_text())
+            codex_run.update({"connector": "codex-cli", "connector_profile": "writer-workspace", "worktree": "."})
+            (codex_run_dir / "run.json").write_text(json.dumps(codex_run))
+            (codex_run_dir / "connector_execution.json").write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "connector": "codex-cli",
+                        "profile": "writer-workspace",
+                        "runtime_session": {
+                            "kind": "codex_thread",
+                            "id": "thread-resume-123",
+                            "resume_mode": "cli_resume",
+                        },
+                    }
+                )
+            )
+            (codex_run_dir / "runtime_state_decision.json").write_text(
+                json.dumps(
+                    {
+                        "assessor_agent_id": "scheduler-agent",
+                        "decision": "resume_runtime_session",
+                        "reason": "previous run was incomplete",
+                        "continuation_prompt": "Continue the interrupted task until the required gates pass.",
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "resume-command",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-resume-codex-001",
+                        "--executable",
+                        "codex",
+                    ]
+                ),
+                0,
+            )
+
+            codex_command = json.loads((codex_run_dir / "resume_command.json").read_text())
+            self.assertEqual(codex_command["argv"][:4], ["codex", "exec", "resume", "thread-resume-123"])
+            self.assertIn("--json", codex_command["argv"])
+            self.assertEqual(codex_command["runtime_session_kind"], "codex_thread")
+            self.assertEqual(codex_command["runtime_session_id"], "thread-resume-123")
+            prompt_path = root / codex_command["prompt_file"]
+            self.assertEqual(codex_command["prompt_sha256"], hashlib.sha256(prompt_path.read_bytes()).hexdigest())
+
+            claude_run_dir = self._make_manual_run(root, "run-resume-claude-001")
+            claude_run = json.loads((claude_run_dir / "run.json").read_text())
+            claude_run.update({"connector": "claude-code-cli", "connector_profile": "writer-workspace", "worktree": "."})
+            (claude_run_dir / "run.json").write_text(json.dumps(claude_run))
+            (claude_run_dir / "connector_execution.json").write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "connector": "claude-code-cli",
+                        "profile": "writer-workspace",
+                        "runtime_session": {
+                            "kind": "claude_session",
+                            "id": "claude-session-456",
+                            "resume_mode": "cli_resume",
+                        },
+                    }
+                )
+            )
+            (claude_run_dir / "runtime_state_decision.json").write_text(
+                json.dumps(
+                    {
+                        "assessor_agent_id": "scheduler-agent",
+                        "decision": "resume_runtime_session",
+                        "reason": "previous run was incomplete",
+                        "continuation_prompt": "Continue the interrupted task until the required gates pass.",
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "resume-command",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-resume-claude-001",
+                        "--executable",
+                        "claude",
+                    ]
+                ),
+                0,
+            )
+
+            claude_command = json.loads((claude_run_dir / "resume_command.json").read_text())
+            self.assertEqual(claude_command["argv"][:5], ["claude", "--bare", "-p", "--resume", "claude-session-456"])
+            self.assertIn("--json-schema", claude_command["argv"])
+            self.assertEqual(claude_command["runtime_session_kind"], "claude_session")
+            self.assertEqual(claude_command["runtime_session_id"], "claude-session-456")
+
+    def test_run_resume_command_executes_rendered_command_and_rejects_mutation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run_dir = self._make_manual_run(root, "run-resume-exec-001")
+            run = json.loads((run_dir / "run.json").read_text())
+            run.update({"connector": "codex-cli", "connector_profile": "writer-workspace", "worktree": "."})
+            (run_dir / "run.json").write_text(json.dumps(run))
+            (run_dir / "connector_execution.json").write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "connector": "codex-cli",
+                        "profile": "writer-workspace",
+                        "runtime_session": {
+                            "kind": "codex_thread",
+                            "id": "thread-resume-exec",
+                            "resume_mode": "cli_resume",
+                        },
+                    }
+                )
+            )
+            (run_dir / "runtime_state_decision.json").write_text(
+                json.dumps(
+                    {
+                        "assessor_agent_id": "scheduler-agent",
+                        "decision": "resume_runtime_session",
+                        "reason": "previous run was incomplete",
+                        "continuation_prompt": "Continue and report done.",
+                    }
+                )
+            )
+            fake_codex = root / "fake-codex"
+            fake_codex.write_text(
+                f"#!{sys.executable}\n"
+                "import json,sys\n"
+                "data=sys.stdin.read()\n"
+                "print(json.dumps({'type':'thread.started','thread_id':'thread-resume-exec'}))\n"
+                "print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'resume done'},'saw_prompt':'Continue and report done.' in data}))\n"
+            )
+            fake_codex.chmod(0o755)
+
+            self.assertEqual(
+                main(
+                    [
+                        "resume-command",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-resume-exec-001",
+                        "--executable",
+                        str(fake_codex),
+                    ]
+                ),
+                0,
+            )
+            self.assertEqual(main(["run-resume-command", "--target", str(root), "--run", "run-resume-exec-001", "--timeout", "5"]), 0)
+
+            execution = json.loads((run_dir / "resume_execution.json").read_text())
+            self.assertEqual(execution["status"], "succeeded")
+            self.assertEqual(execution["runtime_session"]["id"], "thread-resume-exec")
+            self.assertEqual(execution["last_agent_message"], "resume done")
+            events = (run_dir / "resume_events.jsonl").read_text().splitlines()
+            self.assertTrue(json.loads(events[1])["saw_prompt"])
+
+            command = json.loads((run_dir / "resume_command.json").read_text())
+            command["argv"][-1] = "mutated"
+            (run_dir / "resume_command.json").write_text(json.dumps(command))
+            self.assertEqual(main(["run-resume-command", "--target", str(root), "--run", "run-resume-exec-001", "--timeout", "5"]), 1)
+
     def test_run_connector_retries_until_success(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -2216,6 +2390,130 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue((workspace / ".ai" / "agents" / "scheduler-agent.md").exists())
             self.assertFalse((workspace / ".ai" / "private").exists())
             self.assertFalse((workspace / ".ai" / "private" / "assignments.yml").exists())
+
+    def test_scheduler_resume_decision_enables_deterministic_resume_command(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            task = root / "scheduler_task.json"
+            previous_run_dir = self._make_manual_run(root, "run-previous-runtime-001")
+            previous_run = json.loads((previous_run_dir / "run.json").read_text())
+            previous_run.update({"connector": "codex-cli", "connector_profile": "writer-workspace", "worktree": "."})
+            (previous_run_dir / "run.json").write_text(json.dumps(previous_run))
+            (previous_run_dir / "connector_execution.json").write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "runtime_session": {
+                            "kind": "codex_thread",
+                            "id": "thread-private-resume-001",
+                            "resume_mode": "cli_resume",
+                        },
+                        "last_agent_message": "I stopped after giving next steps.",
+                    }
+                )
+            )
+            plan = {
+                "run_plan": [
+                    {
+                        "agent_id": "backend-implementer",
+                        "task_id": "T-resume",
+                        "mode": "writer",
+                        "depends_on": [],
+                        "expected_output": "branch_pr",
+                        "requires_pr": True,
+                        "risk_level": "medium",
+                        "success_criteria": ["Finish the interrupted task"],
+                    }
+                ],
+                "blocked": [],
+                "risk_notes": [],
+                "runtime_state_decision": {
+                    "assessor_agent_id": "scheduler-agent",
+                    "decision": "resume_runtime_session",
+                    "target_run_id": "run-previous-runtime-001",
+                    "reason": "Previous runtime has a resumable incomplete session.",
+                    "continuation_prompt": "Continue the prior task until validation and PR gates pass.",
+                },
+            }
+            code = f"import json,sys; sys.stdin.read(); print(json.dumps({plan!r}))"
+            connector = root / ".ai" / "connectors" / "test-cli.yml"
+            connector.write_text(
+                "\n".join(
+                    [
+                        "id: test-cli",
+                        "version: 1",
+                        f"executable: {sys.executable}",
+                        "profiles:",
+                        "  test-profile:",
+                        "    mode: test",
+                        "command_templates:",
+                        f"  test-profile: {sys.executable} -c {json.dumps(code)} {{output_schema}}",
+                        "",
+                    ]
+                )
+            )
+            self._bind_agent_to_test_connector(root, "scheduler-agent")
+            task.write_text(
+                json.dumps(
+                    {
+                        "summary": "Assess and continue failed runtime.",
+                        "runtime_state_request": {
+                            "assessor_agent_id": "scheduler-agent",
+                            "runtime_observations": [
+                                {
+                                    "run_id": "run-previous-runtime-001",
+                                    "agent_id": "backend-implementer",
+                                    "resume_available": True,
+                                }
+                            ],
+                            "decision_contract": {
+                                "allowed_decisions": ["resume_runtime_session", "repair_new_run"],
+                            },
+                        },
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "scheduler-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--task",
+                        str(task),
+                        "--run-id",
+                        "run-scheduler-resume-001",
+                        "--timeout",
+                        "5",
+                    ]
+                ),
+                0,
+            )
+
+            decision = json.loads((previous_run_dir / "runtime_state_decision.json").read_text())
+            self.assertEqual(decision["decision"], "resume_runtime_session")
+            self.assertEqual(decision["target_run_id"], "run-previous-runtime-001")
+            self.assertNotIn("thread-private-resume-001", json.dumps(decision))
+
+            self.assertEqual(
+                main(
+                    [
+                        "resume-command",
+                        "--target",
+                        str(root),
+                        "--run",
+                        "run-previous-runtime-001",
+                        "--executable",
+                        "codex",
+                    ]
+                ),
+                0,
+            )
+            command = json.loads((previous_run_dir / "resume_command.json").read_text())
+            self.assertEqual(command["argv"][:4], ["codex", "exec", "resume", "thread-private-resume-001"])
 
     def test_automation_run_can_start_from_scheduler_task(self):
         with tempfile.TemporaryDirectory() as temp:

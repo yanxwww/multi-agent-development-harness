@@ -99,6 +99,41 @@
       "items": {
         "type": "string"
       }
+    },
+    "runtime_state_decision": {
+      "type": "object",
+      "required": [
+        "assessor_agent_id",
+        "decision",
+        "target_run_id",
+        "reason",
+        "continuation_prompt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "assessor_agent_id": {
+          "const": "scheduler-agent"
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "resume_runtime_session",
+            "repair_new_run",
+            "mark_completed",
+            "dead_letter",
+            "stop_blocked"
+          ]
+        },
+        "target_run_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "continuation_prompt": {
+          "type": "string"
+        }
+      }
     }
   }
 }

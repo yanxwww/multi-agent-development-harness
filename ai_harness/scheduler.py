@@ -8,7 +8,7 @@ from typing import Any
 
 from .artifacts import extract_json_artifact_from_run
 from .connectors import render_connector_command
-from .dispatch import validate_schedule_plan_document
+from .dispatch import validate_runtime_state_decision_document, validate_schedule_plan_document
 from .executor import run_connector_command
 from .runs import create_run
 
@@ -28,6 +28,7 @@ def run_scheduler(
     if timeout_seconds <= 0:
         raise SchedulerError("timeout must be greater than 0")
 
+    scheduler_task = _load_scheduler_task(task_path)
     run = create_run(
         target=target,
         issue=issue,
@@ -64,6 +65,13 @@ def run_scheduler(
         artifact_name="SchedulePlan",
     )
     validate_schedule_plan_document(plan)
+    runtime_state_decision = _attach_runtime_state_decision(
+        target=target,
+        scheduler_run_dir=run_dir,
+        scheduler_run_id=run_id,
+        scheduler_task=scheduler_task,
+        plan=plan,
+    )
 
     run_dir = target / ".ai" / "runs" / run_id
     schedule_plan_path = run_dir / "schedule_plan.json"
@@ -76,6 +84,8 @@ def run_scheduler(
         "connector_status": execution["status"],
         "created_at": _now(),
     }
+    if runtime_state_decision:
+        summary["runtime_state_decision"] = runtime_state_decision
     (run_dir / "scheduler_run.json").write_text(json.dumps(summary, indent=2) + "\n")
     _append_trace(run_dir, {"event": "scheduler_run_finished", "run_id": run_id, "status": "succeeded"})
     return summary
@@ -93,6 +103,99 @@ def prepare_scheduler_workspace(target: Path, run_id: str) -> str:
     for directory in ["agents", "rules", "schemas", "skills"]:
         _copy_tree_if_exists(target / ".ai" / directory, workspace / ".ai" / directory)
     return f".ai/scheduler-workspaces/{run_id}"
+
+
+def _load_scheduler_task(task_path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(task_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SchedulerError(f"scheduler task is invalid JSON: {task_path}") from exc
+    if not isinstance(value, dict):
+        raise SchedulerError("scheduler task must be an object")
+    return value
+
+
+def _attach_runtime_state_decision(
+    target: Path,
+    scheduler_run_dir: Path,
+    scheduler_run_id: str,
+    scheduler_task: dict[str, Any],
+    plan: dict[str, Any],
+) -> dict[str, Any] | None:
+    request = scheduler_task.get("runtime_state_request")
+    if request is None:
+        return None
+    if not isinstance(request, dict):
+        raise SchedulerError("runtime_state_request must be an object")
+    decision = plan.get("runtime_state_decision")
+    if decision is None:
+        raise SchedulerError("scheduler runtime_state_decision is missing")
+    validate_runtime_state_decision_document(decision)
+    _validate_decision_against_request(decision, request)
+
+    scheduler_decision_path = scheduler_run_dir / "runtime_state_decision.json"
+    scheduler_decision_path.write_text(json.dumps(decision, indent=2) + "\n")
+    _append_trace(
+        scheduler_run_dir,
+        {
+            "event": "runtime_state_decision_recorded",
+            "scheduler_run_id": scheduler_run_id,
+            "decision": decision["decision"],
+            "target_run_id": decision["target_run_id"],
+        },
+    )
+
+    target_decision_path = None
+    if decision["decision"] == "resume_runtime_session":
+        target_run_dir = target / ".ai" / "runs" / decision["target_run_id"]
+        _validate_resumable_target_run(target_run_dir, decision["target_run_id"])
+        target_decision_path = target_run_dir / "runtime_state_decision.json"
+        target_decision_path.write_text(json.dumps(decision, indent=2) + "\n")
+        _append_trace(
+            target_run_dir,
+            {
+                "event": "runtime_state_decision_attached",
+                "scheduler_run_id": scheduler_run_id,
+                "decision": decision["decision"],
+            },
+        )
+
+    summary = {
+        "decision": decision["decision"],
+        "target_run_id": decision["target_run_id"],
+        "scheduler_decision": str(scheduler_decision_path.relative_to(target)),
+    }
+    if target_decision_path:
+        summary["target_decision"] = str(target_decision_path.relative_to(target))
+    return summary
+
+
+def _validate_decision_against_request(decision: dict[str, Any], request: dict[str, Any]) -> None:
+    allowed = request.get("decision_contract", {}).get("allowed_decisions", [])
+    if isinstance(allowed, list) and allowed and decision["decision"] not in allowed:
+        raise SchedulerError(f"runtime state decision is not allowed: {decision['decision']}")
+    observations = request.get("runtime_observations", [])
+    if not isinstance(observations, list):
+        raise SchedulerError("runtime_state_request.runtime_observations must be a list")
+    matching = [item for item in observations if isinstance(item, dict) and item.get("run_id") == decision["target_run_id"]]
+    if not matching:
+        raise SchedulerError(f"runtime state decision targets an unobserved run: {decision['target_run_id']}")
+    if decision["decision"] == "resume_runtime_session" and not any(item.get("resume_available") for item in matching):
+        raise SchedulerError(f"runtime state decision targets a non-resumable run: {decision['target_run_id']}")
+
+
+def _validate_resumable_target_run(target_run_dir: Path, run_id: str) -> None:
+    if not target_run_dir.exists():
+        raise SchedulerError(f"runtime state decision target run is missing: {run_id}")
+    execution_path = target_run_dir / "connector_execution.json"
+    if not execution_path.exists():
+        raise SchedulerError(f"runtime state decision target connector execution is missing: {run_id}")
+    execution = json.loads(execution_path.read_text())
+    runtime_session = execution.get("runtime_session") if isinstance(execution, dict) else None
+    if not isinstance(runtime_session, dict):
+        raise SchedulerError(f"runtime state decision target has no runtime session: {run_id}")
+    if runtime_session.get("resume_mode") != "cli_resume":
+        raise SchedulerError(f"runtime state decision target is not CLI-resumable: {run_id}")
 
 
 def _copy_file_if_exists(source: Path, destination: Path) -> None:
