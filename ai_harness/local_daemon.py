@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from .automation import run_automation
 from .github import run_github_doctor
-from .local_daemon_policy import load_trigger_policy
+from .local_daemon_policy import load_local_daemon_policy
 from .runs import validate_run_id
 from .validation import validate_scaffold
 
@@ -68,22 +69,69 @@ def run_github_sync_poll(
 
         state = _load_state(root)
         processed = set(state.get("processed_event_ids", []))
+        retry_events = dict(state.get("retry_events", {}))
+        dead_letter_ids = set(state.get("dead_letter_event_ids", []))
         items = _load_github_items(target=target, executable=executable)
-        trigger_policy = load_trigger_policy(target)
-        candidates = _trigger_events(items, trigger_policy)
+        daemon_policy = load_local_daemon_policy(target)
+        candidates = _trigger_events(items, daemon_policy)
+        retry_sources = _retry_sources(items, daemon_policy["retry"])
 
         created_events: list[dict[str, Any]] = []
         skipped_events: list[dict[str, Any]] = []
         for event in candidates:
             event_id = event["event_id"]
             event_dir = root / "events" / event_id
-            if event_id in processed or event_dir.exists():
+            event_dir_existed = event_dir.exists()
+            requeued_dead_letter = False
+            retry_requested = _source_key(event["source"]) in retry_sources
+            retry_record = retry_events.get(event_id, {})
+
+            if event_id in processed:
                 skipped_events.append({"event_id": event_id, "reason": "already processed"})
-                processed.add(event_id)
                 continue
-            event_dir.mkdir(parents=True)
+
+            if event_id in dead_letter_ids:
+                if not retry_requested:
+                    skipped_events.append({"event_id": event_id, "reason": "dead_lettered"})
+                    continue
+                dead_letter_ids.discard(event_id)
+                retry_events.pop(event_id, None)
+                _remove_dead_letter(root, event_id)
+                retry_record = {}
+                requeued_dead_letter = True
+
+            if event_dir.exists() and not retry_record and not requeued_dead_letter:
+                existing_result = _read_event_result(event_dir)
+                resume_retry_record = _resume_retry_record(event, existing_result, execute)
+                if resume_retry_record is None:
+                    skipped_events.append({"event_id": event_id, "reason": "already processed"})
+                    processed.add(event_id)
+                    continue
+                retry_record = resume_retry_record
+
+            if retry_record and not retry_requested and not _retry_due(retry_record):
+                skipped_events.append(
+                    {
+                        "event_id": event_id,
+                        "reason": "waiting_for_retry_backoff",
+                        "next_retry_at": retry_record.get("next_retry_at", ""),
+                    }
+                )
+                continue
+
+            attempt = int(retry_record.get("attempts", 0)) + 1
+            event_dir.mkdir(parents=True, exist_ok=True)
             (event_dir / "event.json").write_text(json.dumps(event, indent=2) + "\n")
             task = _scheduler_task(event)
+            retry_context = _retry_context(
+                event_dir=event_dir,
+                retry_record=retry_record,
+                attempt=attempt,
+                retry_requested=retry_requested,
+                resume=event_dir_existed or bool(retry_record) or requeued_dead_letter,
+            )
+            if retry_context is not None:
+                task["retry_context"] = retry_context
             task_path = event_dir / "scheduler_task.json"
             task_path.write_text(json.dumps(task, indent=2) + "\n")
             created = {
@@ -94,42 +142,71 @@ def run_github_sync_poll(
                 "scheduler_task": str(task_path.relative_to(target)),
                 "executed": False,
                 "status": "planned",
+                "attempt": attempt,
+                "retry_requested": retry_requested,
             }
             if execute and event["action"] in {"run", "plan", "repair", "review"}:
-                automation_run_id = f"run-local-{_safe_id(event_id)}"
-                automation = run_automation(
-                    target=target,
-                    issue=_issue_for_event(event),
-                    plan_path=None,
-                    scheduler_task_path=task_path,
-                    run_id=automation_run_id,
-                    timeout_seconds=timeout_seconds,
-                    retries=retries,
-                    validation_mode=validation_mode,
-                    create_worktree=create_worktree,
-                    base_ref=base_ref,
-                    prepare_pr_command=True,
-                    draft_pr=False,
-                    commit_and_push=True,
-                    run_pr_commands=True,
-                    github_checks=True,
-                    checks_watch=True,
-                    lifecycle=True,
-                    auto_review=True,
-                    auto_risk_approval=True,
-                    auto_repair=True,
-                    run_auto_repair_enabled=True,
-                    merge=True,
-                    delete_branch=True,
-                )
+                automation_run_id = _automation_run_id(event_id, attempt)
+                try:
+                    automation = run_automation(
+                        target=target,
+                        issue=_issue_for_event(event),
+                        plan_path=None,
+                        scheduler_task_path=task_path,
+                        run_id=automation_run_id,
+                        timeout_seconds=timeout_seconds,
+                        retries=retries,
+                        validation_mode=validation_mode,
+                        create_worktree=create_worktree,
+                        base_ref=base_ref,
+                        prepare_pr_command=True,
+                        draft_pr=False,
+                        commit_and_push=True,
+                        run_pr_commands=True,
+                        github_checks=True,
+                        checks_watch=True,
+                        lifecycle=True,
+                        auto_review=True,
+                        auto_risk_approval=True,
+                        auto_repair=True,
+                        run_auto_repair_enabled=True,
+                        merge=True,
+                        delete_branch=True,
+                    )
+                except Exception as exc:
+                    automation = {"status": "failed", "error": str(exc)}
                 created.update(
                     {
                         "executed": True,
                         "status": automation["status"],
                         "automation_run_id": automation_run_id,
                         "automation_run": f".ai/runs/{automation_run_id}/automation_run.json",
+                        "completion_status": "complete" if automation["status"] == "succeeded" else "incomplete",
                     }
                 )
+                if "error" in automation:
+                    created["error"] = automation["error"]
+
+            if execute and created["status"] == "succeeded":
+                processed.add(event_id)
+                retry_events.pop(event_id, None)
+            elif execute and created["executed"]:
+                retry_state = _retry_state(
+                    event=event,
+                    result=created,
+                    attempt=attempt,
+                    retry_policy=daemon_policy["retry"],
+                )
+                if attempt >= daemon_policy["retry"]["max_attempts"]:
+                    retry_events.pop(event_id, None)
+                    dead_letter_ids.add(event_id)
+                    created["dead_lettered"] = True
+                    created["retry"] = retry_state
+                    _write_dead_letter(root, event_dir, event, created, retry_state)
+                else:
+                    retry_events[event_id] = retry_state
+                    created["retry"] = retry_state
+
             status_result = _sync_event_status(
                 target=target,
                 event=event,
@@ -142,11 +219,14 @@ def run_github_sync_poll(
                 created["status_sync"] = status_result
             _write_event_result(event_dir, created)
             created_events.append(created)
-            processed.add(event_id)
+            if not execute:
+                processed.add(event_id)
 
         state.update(
             {
                 "processed_event_ids": sorted(processed),
+                "retry_events": retry_events,
+                "dead_letter_event_ids": sorted(dead_letter_ids),
                 "last_poll_run_id": run_id,
                 "last_poll_at": _now(),
             }
@@ -356,6 +436,174 @@ def _comment_command(body: str, comment_actions: dict[str, str]) -> str:
     return first_line if first_line in comment_actions else ""
 
 
+def _retry_sources(items: list[dict[str, Any]], retry_policy: dict[str, Any]) -> set[str]:
+    sources: set[str] = set()
+    retry_label = str(retry_policy.get("retry_label", ""))
+    retry_comment = str(retry_policy.get("retry_comment", ""))
+    for item in items:
+        number = item.get("number")
+        if number is None:
+            continue
+        source = {"kind": str(item.get("kind", "issue")), "number": int(number)}
+        labels = item.get("labels", [])
+        if isinstance(labels, list):
+            for label in labels:
+                label_name = label.get("name") if isinstance(label, dict) else label
+                if retry_label and str(label_name) == retry_label:
+                    sources.add(_source_key(source))
+        comments = item.get("comments", [])
+        if isinstance(comments, list):
+            for comment in comments:
+                body = comment.get("body", "") if isinstance(comment, dict) else ""
+                first_line = str(body).strip().splitlines()[0].strip() if str(body).strip() else ""
+                if retry_comment and first_line == retry_comment:
+                    sources.add(_source_key(source))
+    return sources
+
+
+def _source_key(source: dict[str, Any]) -> str:
+    return f"{source.get('kind', 'issue')}:{source.get('number', '')}"
+
+
+def _retry_due(retry_record: dict[str, Any]) -> bool:
+    next_retry_at = str(retry_record.get("next_retry_at", ""))
+    if not next_retry_at:
+        return True
+    try:
+        return datetime.fromisoformat(next_retry_at) <= datetime.now(timezone.utc)
+    except ValueError:
+        return True
+
+
+def _retry_context(
+    event_dir: Path,
+    retry_record: dict[str, Any],
+    attempt: int,
+    retry_requested: bool,
+    resume: bool,
+) -> dict[str, Any] | None:
+    if not resume:
+        return None
+    existing_result = _read_event_result(event_dir)
+    context: dict[str, Any] = {
+        "resume": True,
+        "attempt": attempt,
+        "retry_requested": retry_requested,
+        "instruction": (
+            "Continue the unfinished local automation. Inspect prior artifacts and finish the task; "
+            "do not treat next-step advice as completion unless gates pass."
+        ),
+    }
+    if retry_record:
+        context["previous_retry"] = _summarize_retry_record(retry_record)
+    if existing_result:
+        context["previous_result"] = _summarize_event_result(existing_result)
+    return context
+
+
+def _summarize_retry_record(retry_record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: retry_record[key]
+        for key in [
+            "event_id",
+            "status",
+            "completion_status",
+            "attempts",
+            "max_attempts",
+            "last_attempt_at",
+            "next_retry_at",
+            "automation_run_id",
+            "error",
+        ]
+        if key in retry_record
+    }
+
+
+def _summarize_event_result(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: result[key]
+        for key in [
+            "status",
+            "completion_status",
+            "executed",
+            "attempt",
+            "automation_run_id",
+            "automation_run",
+            "dead_lettered",
+            "error",
+        ]
+        if key in result
+    }
+
+
+def _read_event_result(event_dir: Path) -> dict[str, Any]:
+    path = event_dir / "event_result.json"
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _resume_retry_record(
+    event: dict[str, Any],
+    existing_result: dict[str, Any],
+    execute: bool,
+) -> dict[str, Any] | None:
+    if not execute or event["action"] not in {"run", "plan", "repair", "review"}:
+        return None
+    if not existing_result:
+        return {}
+    status = str(existing_result.get("status", ""))
+    completion_status = str(existing_result.get("completion_status", ""))
+    if status == "succeeded" or completion_status == "complete":
+        return None
+    if status == "planned" and existing_result.get("executed") is False:
+        return None
+    retry = existing_result.get("retry")
+    if isinstance(retry, dict):
+        return dict(retry)
+    try:
+        attempts = int(existing_result.get("attempt", 0))
+    except (TypeError, ValueError):
+        attempts = 0
+    if attempts > 0:
+        return {"attempts": attempts}
+    return {}
+
+
+def _automation_run_id(event_id: str, attempt: int) -> str:
+    return f"run-local-{_safe_id(event_id)}-attempt-{attempt}"
+
+
+def _retry_state(
+    event: dict[str, Any],
+    result: dict[str, Any],
+    attempt: int,
+    retry_policy: dict[str, Any],
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    next_retry_at = now + timedelta(seconds=int(retry_policy.get("backoff_seconds", 0)))
+    state = {
+        "event_id": event["event_id"],
+        "source": event["source"],
+        "trigger": event["trigger"],
+        "action": event["action"],
+        "attempts": attempt,
+        "max_attempts": int(retry_policy.get("max_attempts", 1)),
+        "status": result["status"],
+        "completion_status": result.get("completion_status", "incomplete"),
+        "last_attempt_at": now.isoformat(),
+        "next_retry_at": next_retry_at.isoformat(),
+        "automation_run_id": result.get("automation_run_id", ""),
+    }
+    if "error" in result:
+        state["error"] = result["error"]
+    return state
+
+
 def _scheduler_task(event: dict[str, Any]) -> dict[str, Any]:
     source = event["source"]
     source_name = f"{source['kind']} {source['number']}"
@@ -414,7 +662,7 @@ def _status_command(event_id: str, source_kind: str, number: str, executable: st
 
 def _local_daemon_root(target: Path) -> Path:
     root = target / ".ai" / "local-daemon"
-    for directory in ["events", "leases", "polls"]:
+    for directory in ["events", "leases", "polls", "dead-letter"]:
         (root / directory).mkdir(parents=True, exist_ok=True)
     return root
 
@@ -428,6 +676,10 @@ def _load_state(root: Path) -> dict[str, Any]:
         raise LocalDaemonError("local daemon state must be an object")
     if not isinstance(value.get("processed_event_ids", []), list):
         raise LocalDaemonError("local daemon processed_event_ids must be a list")
+    if not isinstance(value.get("retry_events", {}), dict):
+        raise LocalDaemonError("local daemon retry_events must be an object")
+    if not isinstance(value.get("dead_letter_event_ids", []), list):
+        raise LocalDaemonError("local daemon dead_letter_event_ids must be a list")
     return value
 
 
@@ -450,10 +702,47 @@ def _write_event_result(event_dir: Path, result: dict[str, Any]) -> None:
         "scheduler_task": result["scheduler_task"],
         "updated_at": _now(),
     }
-    for key in ["automation_run_id", "automation_run", "status_sync"]:
+    for key in [
+        "automation_run_id",
+        "automation_run",
+        "status_sync",
+        "completion_status",
+        "error",
+        "retry",
+        "dead_lettered",
+        "attempt",
+        "retry_requested",
+    ]:
         if key in result:
             payload[key] = result[key]
     (event_dir / "event_result.json").write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _write_dead_letter(
+    root: Path,
+    event_dir: Path,
+    event: dict[str, Any],
+    result: dict[str, Any],
+    retry_state: dict[str, Any],
+) -> None:
+    dead_letter_dir = root / "dead-letter" / event["event_id"]
+    dead_letter_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "event_id": event["event_id"],
+        "event": event,
+        "event_dir": str(event_dir.relative_to(root.parent.parent)),
+        "status": result["status"],
+        "completion_status": result.get("completion_status", "incomplete"),
+        "retry": retry_state,
+        "created_at": _now(),
+    }
+    if "error" in result:
+        payload["error"] = result["error"]
+    (dead_letter_dir / "dead_letter.json").write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def _remove_dead_letter(root: Path, event_id: str) -> None:
+    shutil.rmtree(root / "dead-letter" / event_id, ignore_errors=True)
 
 
 def _sync_event_status(

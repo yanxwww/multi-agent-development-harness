@@ -358,6 +358,7 @@ def init_scaffold(target: Path, force: bool = False) -> None:
         ".ai/local-daemon/events",
         ".ai/local-daemon/leases",
         ".ai/local-daemon/polls",
+        ".ai/local-daemon/dead-letter",
         ".ai/local-daemon/launchd",
         ".agents/skills",
         ".claude/skills",
@@ -405,6 +406,7 @@ def init_scaffold(target: Path, force: bool = False) -> None:
         ".ai/local-daemon/events/.gitkeep",
         ".ai/local-daemon/leases/.gitkeep",
         ".ai/local-daemon/polls/.gitkeep",
+        ".ai/local-daemon/dead-letter/.gitkeep",
         ".agents/skills/.gitkeep",
         ".claude/skills/.gitkeep",
     ]:
@@ -440,6 +442,8 @@ def _merge_gitignore(path: Path) -> None:
         "!.ai/local-daemon/leases/.gitkeep",
         ".ai/local-daemon/polls/*",
         "!.ai/local-daemon/polls/.gitkeep",
+        ".ai/local-daemon/dead-letter/*",
+        "!.ai/local-daemon/dead-letter/.gitkeep",
         ".ai/local-daemon/state.json",
         ".ai/local-daemon/*.log",
         ".ai/github_doctor.json",
@@ -854,6 +858,11 @@ comment_actions:
   /ai run: run
   /ai repair: repair
   /ai status: status
+retry:
+  max_attempts: 3
+  backoff_seconds: 300
+  retry_label: ai:retry
+  retry_comment: /ai retry
 """,
     "review-rubric": """version: 1
 finding_levels:

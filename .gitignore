@@ -22,6 +22,8 @@ __pycache__/
 !.ai/local-daemon/leases/.gitkeep
 .ai/local-daemon/polls/*
 !.ai/local-daemon/polls/.gitkeep
+.ai/local-daemon/dead-letter/*
+!.ai/local-daemon/dead-letter/.gitkeep
 .ai/local-daemon/state.json
 .ai/local-daemon/*.log
 .ai/github_doctor.json
