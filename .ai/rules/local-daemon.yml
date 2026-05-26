@@ -8,3 +8,8 @@ comment_actions:
   /ai run: run
   /ai repair: repair
   /ai status: status
+retry:
+  max_attempts: 3
+  backoff_seconds: 300
+  retry_label: ai:retry
+  retry_comment: /ai retry

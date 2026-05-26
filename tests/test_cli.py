@@ -28,6 +28,7 @@ class HarnessCliTests(unittest.TestCase):
             self.assertTrue((root / ".ai" / "local-daemon" / "events" / ".gitkeep").exists())
             self.assertTrue((root / ".ai" / "local-daemon" / "leases" / ".gitkeep").exists())
             self.assertTrue((root / ".ai" / "local-daemon" / "polls" / ".gitkeep").exists())
+            self.assertTrue((root / ".ai" / "local-daemon" / "dead-letter" / ".gitkeep").exists())
             launchd = root / ".ai" / "local-daemon" / "launchd" / "com.ai-harness.local-daemon.plist"
             self.assertTrue(launchd.exists())
             launchd_text = launchd.read_text()
@@ -53,6 +54,7 @@ class HarnessCliTests(unittest.TestCase):
             self.assertIn(".ai/scheduler-workspaces/*", gitignore)
             self.assertIn(".ai/events/*", gitignore)
             self.assertIn(".ai/local-daemon/events/*", gitignore)
+            self.assertIn(".ai/local-daemon/dead-letter/*", gitignore)
             self.assertIn(".ai/local-daemon/state.json", gitignore)
             self.assertIn(".ai/github_doctor.json", gitignore)
             self.assertFalse((root / "CLAUDE.md").exists())
@@ -111,6 +113,28 @@ class HarnessCliTests(unittest.TestCase):
                         "  ai:auto: deploy",
                         "comment_actions:",
                         "  /ai run: run",
+                        "",
+                    ]
+                )
+            )
+
+            self.assertEqual(main(["validate", "--target", str(root)]), 1)
+
+    def test_validate_rejects_invalid_local_daemon_retry_policy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            (root / ".ai" / "rules" / "local-daemon.yml").write_text(
+                "\n".join(
+                    [
+                        "version: 1",
+                        "label_actions:",
+                        "  ai:auto: run",
+                        "comment_actions:",
+                        "  /ai run: run",
+                        "retry:",
+                        "  max_attempts: 0",
+                        "  backoff_seconds: 300",
                         "",
                     ]
                 )
@@ -2740,6 +2764,162 @@ class HarnessCliTests(unittest.TestCase):
             calls = [json.loads(line) for line in calls_log.read_text().splitlines()]
             self.assertIn(["auth", "status"], calls)
             self.assertNotIn(["issue", "list", "--state", "open", "--json", "number,title,body,labels,comments,updatedAt,url"], calls)
+
+    def test_github_sync_poll_retries_failed_execute_events_and_dead_letters(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            main(["init", "--target", str(root)])
+            self._install_failing_test_connector(root)
+            self._init_git_repo(root)
+            remote = root / "remote.git"
+            self._init_bare_remote(root, remote)
+            (root / ".ai" / "rules" / "local-daemon.yml").write_text(
+                "\n".join(
+                    [
+                        "version: 1",
+                        "label_actions:",
+                        "  ai:auto: run",
+                        "comment_actions:",
+                        "  /ai run: run",
+                        "retry:",
+                        "  max_attempts: 2",
+                        "  backoff_seconds: 3600",
+                        "  retry_label: ai:retry",
+                        "  retry_comment: /ai retry",
+                        "",
+                    ]
+                )
+            )
+            retry_flag = root / "retry.flag"
+            fake_gh = root / "fake-gh"
+            script = (
+                "import json,sys\n"
+                f"retry_flag={str(retry_flag)!r}\n"
+                "args=sys.argv[1:]\n"
+                "comments=[{'body':'/ai retry'}] if __import__('pathlib').Path(retry_flag).exists() else []\n"
+                "issues=[{'number':42,'title':'Retry failed automation','body':'Run this locally.',"
+                "'url':'https://github.com/example/repo/issues/42','updatedAt':'2026-05-26T01:02:03Z',"
+                "'labels':[{'name':'ai:auto'}],'comments':comments}]\n"
+                "if args[:2] == ['auth', 'status']:\n"
+                "    print('authenticated')\n"
+                "elif args[:2] == ['repo', 'view']:\n"
+                "    print('{\"nameWithOwner\":\"example/repo\",\"url\":\"https://github.com/example/repo\"}')\n"
+                "elif args[:2] == ['issue', 'list']:\n"
+                "    print(json.dumps(issues))\n"
+                "elif args[:2] == ['pr', 'list']:\n"
+                "    print('[]')\n"
+                "else:\n"
+                "    print('[]')\n"
+            )
+            fake_gh.write_text(f"#!{sys.executable}\n{script}")
+            fake_gh.chmod(0o755)
+            event_dir = root / ".ai" / "local-daemon" / "events" / "issue-42-ai-auto"
+            event_dir.mkdir(parents=True)
+            (event_dir / "event.json").write_text("{}\n")
+
+            self.assertEqual(
+                main(
+                    [
+                        "github-sync-poll",
+                        "--target",
+                        str(root),
+                        "--run-id",
+                        "run-local-retry-001",
+                        "--executable",
+                        str(fake_gh),
+                        "--execute",
+                        "--timeout",
+                        "5",
+                    ]
+                ),
+                1,
+            )
+            first = json.loads((event_dir / "event_result.json").read_text())
+            self.assertEqual(first["status"], "failed")
+            self.assertEqual(first["completion_status"], "incomplete")
+            self.assertEqual(first["retry"]["attempts"], 1)
+            self.assertTrue(first["automation_run_id"].endswith("-attempt-1"))
+            first_task = json.loads((event_dir / "scheduler_task.json").read_text())
+            self.assertTrue(first_task["retry_context"]["resume"])
+            self.assertEqual(first_task["retry_context"]["attempt"], 1)
+            state = json.loads((root / ".ai" / "local-daemon" / "state.json").read_text())
+            self.assertNotIn("issue-42-ai-auto", state["processed_event_ids"])
+            self.assertEqual(state["retry_events"]["issue-42-ai-auto"]["attempts"], 1)
+
+            self.assertEqual(
+                main(
+                    [
+                        "github-sync-poll",
+                        "--target",
+                        str(root),
+                        "--run-id",
+                        "run-local-retry-002",
+                        "--executable",
+                        str(fake_gh),
+                        "--execute",
+                        "--timeout",
+                        "5",
+                    ]
+                ),
+                0,
+            )
+            second = json.loads((root / ".ai" / "local-daemon" / "polls" / "run-local-retry-002.json").read_text())
+            self.assertEqual(second["created_event_count"], 0)
+            self.assertEqual(second["skipped_events"][0]["reason"], "waiting_for_retry_backoff")
+
+            retry_flag.write_text("retry\n")
+            self.assertEqual(
+                main(
+                    [
+                        "github-sync-poll",
+                        "--target",
+                        str(root),
+                        "--run-id",
+                        "run-local-retry-003",
+                        "--executable",
+                        str(fake_gh),
+                        "--execute",
+                        "--timeout",
+                        "5",
+                    ]
+                ),
+                1,
+            )
+            third = json.loads((event_dir / "event_result.json").read_text())
+            self.assertTrue(third["dead_lettered"])
+            self.assertEqual(third["retry"]["attempts"], 2)
+            self.assertTrue(third["automation_run_id"].endswith("-attempt-2"))
+            third_task = json.loads((event_dir / "scheduler_task.json").read_text())
+            self.assertEqual(third_task["retry_context"]["previous_result"]["status"], "failed")
+            self.assertEqual(third_task["retry_context"]["previous_retry"]["attempts"], 1)
+            dead_letter = root / ".ai" / "local-daemon" / "dead-letter" / "issue-42-ai-auto" / "dead_letter.json"
+            self.assertTrue(dead_letter.exists())
+            state = json.loads((root / ".ai" / "local-daemon" / "state.json").read_text())
+            self.assertIn("issue-42-ai-auto", state["dead_letter_event_ids"])
+
+            self.assertEqual(
+                main(
+                    [
+                        "github-sync-poll",
+                        "--target",
+                        str(root),
+                        "--run-id",
+                        "run-local-retry-004",
+                        "--executable",
+                        str(fake_gh),
+                        "--execute",
+                        "--timeout",
+                        "5",
+                    ]
+                ),
+                1,
+            )
+            fourth = json.loads((event_dir / "event_result.json").read_text())
+            self.assertFalse(fourth.get("dead_lettered", False))
+            self.assertEqual(fourth["retry"]["attempts"], 1)
+            state = json.loads((root / ".ai" / "local-daemon" / "state.json").read_text())
+            self.assertNotIn("issue-42-ai-auto", state["dead_letter_event_ids"])
+            self.assertEqual(state["retry_events"]["issue-42-ai-auto"]["attempts"], 1)
 
     def test_github_sync_poll_status_sync_posts_planned_comment_and_event_result(self):
         with tempfile.TemporaryDirectory() as temp:
