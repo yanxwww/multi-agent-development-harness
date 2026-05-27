@@ -176,6 +176,7 @@ def run_github_sync_poll(
                         commit_and_push=True,
                         run_pr_commands=True,
                         github_checks=True,
+                        gh_executable=executable,
                         checks_watch=True,
                         lifecycle=True,
                         auto_review=True,

@@ -53,8 +53,8 @@ python3 -m ai_harness lifecycle-run --target . --run run-20260523-001 --skill-ru
 python3 -m ai_harness integration-plan --target . --issue 123 --schedule-run run-schedule-001 --run-id run-integration-001
 python3 -m ai_harness integration-command --target . --run run-integration-001
 python3 -m ai_harness run-integration-command --target . --run run-integration-001 --timeout 900
-python3 -m ai_harness dispatch-run --target . --issue 123 --plan schedule_plan.json --run-id run-dispatch-001 --timeout 900 --retries 1 --commit-and-push --push-remote origin --prepare-pr-command --pr-base main --draft-pr
-python3 -m ai_harness automation-run --target . --issue 123 --scheduler-task scheduler_task.json --run-id run-automation-001 --timeout 900 --retries 1 --commit-and-push --prepare-pr-command --run-pr-command --github-checks --lifecycle --auto-review --auto-risk-approval --auto-repair --run-auto-repair --merge
+python3 -m ai_harness dispatch-run --target . --issue 123 --plan schedule_plan.json --run-id run-dispatch-001 --timeout 900 --retries 1 --commit-and-push --push-remote origin --prepare-pr-command --pr-base main --draft-pr --gh-executable gh
+python3 -m ai_harness automation-run --target . --issue 123 --scheduler-task scheduler_task.json --run-id run-automation-001 --timeout 900 --retries 1 --commit-and-push --prepare-pr-command --run-pr-command --github-checks --gh-executable gh --lifecycle --auto-review --auto-risk-approval --auto-repair --run-auto-repair --merge
 python3 -m ai_harness automation-daemon --target . --event-file "$GITHUB_EVENT_PATH" --run-id run-gh-001
 python3 -m ai_harness github-sync-poll --target . --run-id run-local-poll-001
 python3 -m ai_harness local-daemon --target . --run-id run-local-daemon --once
@@ -137,7 +137,7 @@ Writer validation commands are selected from `.ai/rules/validation-policy.yml` w
 
 `dispatch-plan` rejects unsafe run ids, duplicate tasks, unknown dependencies, and dependency cycles before creating child runs. If child worktree creation fails mid-plan, the dispatcher removes already-created child run directories, worktrees, and local branches it owns.
 
-`dispatch-run` is the deterministic orchestration path. It calls `dispatch-plan`, executes child runs only after dependencies have succeeded, syncs each child run's allowlisted skills, renders each child run's `connector_command.json`, executes the connector with timeout/retry trace capture, runs the validation gate, then runs the PR body/gate check. Downstream child tasks are marked `blocked` if a prerequisite fails. With `--commit-and-push`, gated writer children run `diff-gate -> commit-command -> run-commit-command -> push-command -> run-push-command`. With `--prepare-pr-command`, pushed writer children also get a deterministic PR command artifact. The scheduler still targets only `agent_id`; connector selection remains private to the dispatcher.
+`dispatch-run` is the deterministic orchestration path. It calls `dispatch-plan`, executes child runs only after dependencies have succeeded, syncs each child run's allowlisted skills, renders each child run's `connector_command.json`, executes the connector with timeout/retry trace capture, runs the validation gate, then runs the PR body/gate check. Downstream child tasks are marked `blocked` if a prerequisite fails. With `--commit-and-push`, gated writer children run `diff-gate -> commit-command -> run-commit-command -> push-command -> run-push-command`. With `--prepare-pr-command`, pushed writer children also get a deterministic PR command artifact using the configured `--gh-executable`. The scheduler still targets only `agent_id`; connector selection remains private to the dispatcher.
 
 `ci-eval-gate` evaluates run-local `ci_results.json` and `eval_results.json` artifacts and writes `ci_eval_gate.json`. It does not run CI directly; external CI adapters can write the result artifacts.
 

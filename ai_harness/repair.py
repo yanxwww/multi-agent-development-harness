@@ -24,6 +24,7 @@ def run_auto_repair(
     prepare_pr_command: bool = False,
     pr_base: str = "main",
     draft_pr: bool = False,
+    gh_executable: str = "gh",
     commit_and_push: bool = False,
     push_remote: str = "origin",
     repair_run_id: str | None = None,
@@ -65,6 +66,7 @@ def run_auto_repair(
         prepare_pr_command=prepare_pr_command,
         pr_base=pr_base,
         draft_pr=draft_pr,
+        gh_executable=gh_executable,
         commit_and_push=commit_and_push,
         push_remote=push_remote,
     )

@@ -300,6 +300,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dispatch_run_parser.add_argument("--pr-base", default="main", help="Base branch for prepared PR commands.")
     dispatch_run_parser.add_argument("--draft-pr", action="store_true", help="Render prepared PR commands as draft PRs.")
+    dispatch_run_parser.add_argument("--gh-executable", default="gh", help="GitHub CLI executable for prepared PR commands.")
     dispatch_run_parser.add_argument(
         "--commit-and-push",
         action="store_true",
@@ -664,6 +665,7 @@ def main(argv: list[str] | None = None) -> int:
                 prepare_pr_command=args.prepare_pr_command,
                 pr_base=args.pr_base,
                 draft_pr=args.draft_pr,
+                gh_executable=args.gh_executable,
                 commit_and_push=args.commit_and_push,
                 push_remote=args.push_remote,
             )

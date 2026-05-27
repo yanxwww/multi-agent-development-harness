@@ -84,6 +84,7 @@ def run_automation(
         prepare_pr_command=prepare_pr_command,
         pr_base=pr_base,
         draft_pr=draft_pr,
+        gh_executable=gh_executable,
         commit_and_push=commit_and_push,
         push_remote=push_remote,
     )
@@ -297,6 +298,7 @@ def _run_child_publication_phases(
                         prepare_pr_command=prepare_pr_command,
                         pr_base=pr_base,
                         draft_pr=draft_pr,
+                        gh_executable=gh_executable,
                         commit_and_push=commit_and_push,
                         push_remote=push_remote,
                     )

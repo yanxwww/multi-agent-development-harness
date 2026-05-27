@@ -400,6 +400,7 @@ def _run_lifecycle_stage(
     try:
         result = action()
         stage["status"] = status_from_result(result)
+        result.setdefault("status", stage["status"])
         if isinstance(result, dict) and result.get("reasons"):
             stage["reasons"] = result["reasons"]
     except LifecycleError as exc:

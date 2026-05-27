@@ -1321,6 +1321,8 @@ class HarnessCliTests(unittest.TestCase):
             command = json.loads((run_dir / "github_checks_command.json").read_text())
             self.assertEqual(command["argv"][:3], [str(fake_gh), "pr", "checks"])
             self.assertIn("7", command["argv"])
+            json_index = command["argv"].index("--json")
+            self.assertEqual(len(command["argv"]), json_index + 2)
             self.assertNotIn("--watch", command["argv"])
             self.assertIn("--watch", command["watch_argv"])
 
@@ -1689,6 +1691,7 @@ class HarnessCliTests(unittest.TestCase):
             lifecycle = json.loads((run_dir / "lifecycle_run.json").read_text())
             self.assertEqual(lifecycle["status"], "merge_ready")
             self.assertTrue(lifecycle["merge_ready"])
+            self.assertEqual(lifecycle["writer_lock_status"], "passed")
             self.assertEqual(
                 [stage["name"] for stage in lifecycle["stages"]],
                 [
@@ -2555,6 +2558,88 @@ class HarnessCliTests(unittest.TestCase):
             self.assertEqual(summary["scheduler_run"]["run_id"], "run-automation-scheduled-001-scheduler")
             self.assertTrue((scheduler_dir / "schedule_plan.json").exists())
             self.assertTrue((child_dir / "connector_execution.json").exists())
+
+    def test_automation_run_uses_configured_gh_executable_for_pr_create(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            remote = root / "origin.git"
+            marker = root / "fake-gh-pr-create.marker"
+            main(["init", "--target", str(root)])
+            self._install_writing_test_connector(root)
+            self._init_git_repo(root)
+            self._init_bare_remote(root, remote)
+            fake_gh = root / "fake-gh"
+            fake_gh.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1 $2\" = \"pr create\" ]; then\n"
+                f"  echo used > {str(marker)!r}\n"
+                "  echo https://example.test/pull/101\n"
+                "  exit 0\n"
+                "fi\n"
+                "echo unexpected gh args: \"$@\" >&2\n"
+                "exit 2\n"
+            )
+            fake_gh.chmod(0o755)
+            plan = root / "automation_pr_executable_plan.json"
+            plan.write_text(
+                json.dumps(
+                    {
+                        "run_plan": [
+                            {
+                                "agent_id": "backend-implementer",
+                                "task_id": "T-pr-executable",
+                                "mode": "writer",
+                                "depends_on": [],
+                                "expected_output": "branch_pr",
+                                "requires_pr": True,
+                                "risk_level": "medium",
+                                "success_criteria": ["Connector writes a change"],
+                            }
+                        ],
+                        "blocked": [],
+                        "risk_notes": [],
+                    }
+                )
+            )
+
+            self.assertEqual(
+                main(
+                    [
+                        "automation-run",
+                        "--target",
+                        str(root),
+                        "--issue",
+                        "123",
+                        "--plan",
+                        str(plan),
+                        "--run-id",
+                        "run-automation-pr-executable-001",
+                        "--validation-mode",
+                        "skip",
+                        "--timeout",
+                        "5",
+                        "--commit-and-push",
+                        "--push-remote",
+                        "origin",
+                        "--prepare-pr-command",
+                        "--run-pr-command",
+                        "--gh-executable",
+                        str(fake_gh),
+                    ]
+                ),
+                0,
+            )
+
+            child_run_id = "run-automation-pr-executable-001-T-pr-executable-backend-implementer"
+            child_dir = root / ".ai" / "runs" / child_run_id
+            summary = json.loads((root / ".ai" / "runs" / "run-automation-pr-executable-001" / "automation_run.json").read_text())
+            command = json.loads((child_dir / "pr_command.json").read_text())
+            execution = json.loads((child_dir / "pr_execution.json").read_text())
+            self.assertEqual(summary["status"], "succeeded")
+            self.assertEqual(command["executable"], str(fake_gh))
+            self.assertEqual(command["argv"][0], str(fake_gh))
+            self.assertTrue(marker.exists())
+            self.assertEqual(execution["status"], "succeeded")
 
     def test_automation_run_can_execute_review_risk_and_repair_followups(self):
         with tempfile.TemporaryDirectory() as temp:
