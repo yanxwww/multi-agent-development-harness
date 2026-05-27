@@ -37,6 +37,7 @@ def dispatch_run(
     prepare_pr_command: bool = False,
     pr_base: str = "main",
     draft_pr: bool = False,
+    gh_executable: str = "gh",
     commit_and_push: bool = False,
     push_remote: str = "origin",
 ) -> dict[str, Any]:
@@ -86,6 +87,7 @@ def dispatch_run(
                 prepare_pr_command=prepare_pr_command,
                 pr_base=pr_base,
                 draft_pr=draft_pr,
+                gh_executable=gh_executable,
                 commit_and_push=commit_and_push,
                 push_remote=push_remote,
             )
@@ -120,6 +122,7 @@ def dispatch_run(
         "prepare_pr_command": prepare_pr_command,
         "pr_base": pr_base,
         "draft_pr": draft_pr,
+        "gh_executable": gh_executable,
         "commit_and_push": commit_and_push,
         "push_remote": push_remote,
         "created_at": _now(),
@@ -137,6 +140,7 @@ def _execute_child(
     prepare_pr_command: bool,
     pr_base: str,
     draft_pr: bool,
+    gh_executable: str,
     commit_and_push: bool,
     push_remote: str,
 ) -> dict[str, Any]:
@@ -184,6 +188,7 @@ def _execute_child(
                 run_id=child_run_id,
                 base=pr_base,
                 draft=draft_pr,
+                executable=gh_executable,
             )
         child.update(
             {
